@@ -370,7 +370,7 @@ function demoApi(){
     demo:true,
     onAuth:function(){},
     login:async function(){}, logout:async function(){},
-    load:async function(){S.session={demo:true};S.isAdmin=true;S.clients=d.clients;S.orders=d.orders;S.checkouts=d.checkouts;S.payments=d.payments;d=null;d={};},
+    load:async function(){S.session={demo:true};S.isAdmin=true;if(d){S.clients=d.clients;S.orders=d.orders;S.checkouts=d.checkouts;S.payments=d.payments;d=null}},
     updateOrder:async function(){save()}, addOrder:async function(cid,r,phone){var x=r;S.orders.push({id:uid(),clientId:cid,created:Date.now(),status:'por_confirmar',qty:x.qty,product:x.product,total:x.total,name:x.name,phone:phone,province:x.province,city:x.city,address:x.address,guide:'',number:'',history:{},advanceAsked:false});save()},
     saveSettings:async function(){save()}, setCheckout:async function(){save()}, setSubStatus:async function(){save()}, setPrice:async function(){save()},
     setPaid:async function(cid,month,paid,amount){var p=S.payments.find(function(x){return x.client_id===cid&&x.month===month});if(p){p.paid=paid;p.amount=amount}else S.payments.push({client_id:cid,month:month,paid:paid,amount:amount});save()},
@@ -546,14 +546,14 @@ function renderAdmin(){
        +'<div class="actions"><button class="b" data-act="viewas" data-id="'+c.id+'">Ver su panel</button>'
        +'<button class="b" data-act="setsub" data-id="'+c.id+'" data-s="cortesia">Cortesía</button><button class="b" data-act="setsub" data-id="'+c.id+'" data-s="canceled">Suspender</button>'
        +'<button class="b" data-act="paid" data-id="'+c.id+'">'+(paidThisMonth(c.id)?'Quitar pago manual':'Marcar pago manual')+'</button></div>'
-       +'<details style="margin-top:10px"><summary class="mute">Acceso y Shopify</summary><div class="actions"><button class="b" data-act="link" data-id="'+c.id+'">Generar enlace de acceso</button><button class="b" data-act="hook" data-id="'+c.id+'">Datos del webhook de Shopify</button></div><div id="info-'+c.id+'"></div></details>'
+       +'<details style="margin-top:10px"'+(S.adminInfo&&S.adminInfo.id===c.id?' open':'')+'><summary class="mute">Acceso y Shopify</summary><div class="actions"><button class="b" data-act="link" data-id="'+c.id+'">Generar enlace de acceso</button><button class="b" data-act="hook" data-id="'+c.id+'">Datos del webhook de Shopify</button></div><div id="info-'+c.id+'">'+(S.adminInfo&&S.adminInfo.id===c.id?S.adminInfo.html:'')+'</div></details>'
        +'<div class="row" style="margin-top:8px"><span class="mute">Mensualidad $</span><input type="number" style="width:90px" data-act="price" data-id="'+c.id+'" value="'+esc(c.price)+'"></div></div>';
     }).join('')||'<div class="card mute">Aún no hay clientes.</div>';
   }else{
     h='<div class="card"><h2>Agregar cliente a mano</h2><div class="mute">Para tus clientes de la agencia (cuenta cortesía) o pruebas. Quien paga por Whop se crea solo.</div>'
      +'<label>Nombre</label><input id="nc_name"><label>Nombre de su tienda</label><input id="nc_store"><label>Correo de la tienda (el mismo de Shopify y Dropi)</label><input id="nc_email" type="email">'
      +'<label>Mensualidad ($)</label><input id="nc_price" type="number" value="0"><label>Tipo</label><select id="nc_status"><option value="cortesia">Cortesía (sin cobro)</option><option value="pendiente">Pendiente de pago</option></select>'
-     +'<div id="ncErr" class="err"></div><div class="actions"><button class="b p" data-act="addclient">Crear cliente</button></div><div id="ncOut"></div></div>'
+     +'<div id="ncErr" class="err"></div><div class="actions"><button class="b p" data-act="addclient">Crear cliente</button></div><div id="ncOut">'+(S.created||'')+'</div></div>'
      +(DEMO?'<div class="card"><h2>Datos de demostración</h2><div class="actions"><button class="b d" data-act="reset">Reiniciar demostración</button></div></div>':'');
   }
   $('#view').innerHTML=h;
@@ -568,7 +568,7 @@ async function run(fn){
 document.addEventListener('click',function(e){
   var t=e.target.closest('[data-act]'); if(!t||t.tagName==='INPUT'||t.tagName==='SELECT'||t.tagName==='TEXTAREA')return;
   var a=t.dataset.act,id=t.dataset.id,o=id&&S.orders.find(function(x){return x.id===id}),c=currentClient();
-  if(a==='tab'){S.tab[t.dataset.scope]=t.dataset.tab;render()}
+  if(a==='tab'){S.tab[t.dataset.scope]=t.dataset.tab;S.created='';S.adminInfo=null;render()}
   else if(a==='filter'){S.filter=t.dataset.f;render()}
   else if(a==='logout'){run(async function(){await api.logout();S.session=null;S.isAdmin=false;S.viewAs=null})}
   else if(a==='login'){run(async function(){var em=$('#em').value.trim(),pw=$('#pw').value;if(!em||!pw)throw new Error('Escribe tu correo y contraseña');await api.login(em,pw);await api.load()})}
@@ -598,11 +598,10 @@ document.addEventListener('click',function(e){
   else if(a==='addclient'){
     var b={action:'create',name:$('#nc_name').value.trim(),store:$('#nc_store').value.trim(),email:$('#nc_email').value.trim(),price:Number($('#nc_price').value)||0,status:$('#nc_status').value};
     if(!b.name||!b.store||!b.email){$('#ncErr').textContent='Faltan datos.';return}
-    run(async function(){var r=await api.admin(b);await api.load();renderAdmin();$('#ncOut').innerHTML='<div class="alert info">Cliente creado. Envíale este enlace por WhatsApp para que cree su contraseña (caduca en 1 hora):</div>'+infoBox('Enlace de acceso',r.link||'')+infoBox('Webhook de Shopify de su tienda',r.webhook_url||'')});
-    return;
+    run(async function(){var r=await api.admin(b);await api.load();
+      S.created='<div class="alert info"><b>Cliente creado: '+esc(b.name)+'.</b> Envíale este enlace por WhatsApp para que cree su contraseña (caduca en 1 hora). Solo a esa persona.</div>'+infoBox('Enlace de acceso',r.link||'(no se pudo generar; usa «Generar enlace de acceso» en Clientes)')+infoBox('Webhook de Shopify de su tienda',r.webhook_url||'')});
   }
   else if(a==='reset'&&api.reset){if(confirm('¿Borrar todo y volver a los ejemplos?'))api.reset()}
-  if(S.adminInfo){setTimeout(function(){var bx=$('#info-'+S.adminInfo.id);if(bx){bx.innerHTML=S.adminInfo.html}},0)}
 });
 document.addEventListener('change',function(e){
   var t=e.target,a=t.dataset&&t.dataset.act;
