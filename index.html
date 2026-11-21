@@ -248,11 +248,63 @@ window.CONFIRMAYA_CONFIG = {
     return r;
   }
 
+
+  /* ---------- Prospectos de la agencia (embudo) ---------- */
+  var PROSPECT_STAGES = [['nuevo', 'Escribió'], ['video', 'Vio el video'], ['calificado', 'Tiene el capital'], ['reunion', 'Reunión agendada'], ['cerrado', 'Cerró'], ['perdido', 'Perdido']];
+  var PROSPECT_TEMPLATES = {
+    bienvenida: 'Hola {nombre} 👋 Gracias por escribirnos. Soy William, de Innovate Solutions. Te dejo un video corto donde te explico qué hacemos, cómo funciona y cuál es el objetivo: {video}\n\n¿Lo ves y me cuentas qué te pareció?',
+    seguimiento24: 'Hola {nombre}, ¿pudiste ver el video que te envié? Si tienes alguna duda, te la respondo por aquí 😊',
+    seguimiento72: 'Hola {nombre}, no quiero ser insistente. Te escribo por última vez: si todavía te interesa tener tu tienda online, dime y agendamos una llamada corta. Si no es el momento, sin problema 🙌',
+    filtro: 'Genial {nombre}. Para arrancar la inversión es de unos $450 el primer mes (mensualidad de la agencia, publicidad en Meta, Shopify y dominio). ¿Cuentas hoy con ese capital para empezar?\n\nResponde:\n1 = Sí, lo tengo\n2 = Me falta un poco\n3 = Tengo menos',
+    agendar: 'Perfecto {nombre} 🙌 Agendemos una videollamada de unos 20 minutos para explicarte todo paso a paso. ¿Qué día y hora de esta semana te acomoda?',
+    recordatorio: 'Hola {nombre}, te recuerdo nuestra reunión de hoy. Si necesitas cambiar la hora, avísame por aquí 🙌',
+    sin_capital: 'Gracias por tu sinceridad, {nombre}. Cuando tengas el capital para arrancar, escríbeme y empezamos. Mientras tanto, cualquier duda me la haces por aquí 😊'
+  };
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function isoDay(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+  function addDays(iso, n) {
+    var p = String(iso).split('-'); var d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]) + n);
+    return isoDay(d);
+  }
+  // Qué mensaje toca enviar ahora a un prospecto
+  function suggestProspect(p) {
+    if (!p || p.stage === 'cerrado' || p.stage === 'perdido') return null;
+    var f = Number(p.followups) || 0;
+    if (p.stage === 'nuevo') return f === 0 ? 'bienvenida' : f === 1 ? 'seguimiento24' : 'seguimiento72';
+    if (p.stage === 'video') return 'filtro';
+    if (p.stage === 'calificado') return 'agendar';
+    if (p.stage === 'reunion') return 'recordatorio';
+    return null;
+  }
+  // Cambios que se guardan después de escribirle con una plantilla
+  function afterContact(p, tpl, today) {
+    var f = Number(p.followups) || 0, patch = { last_contact_at: new Date().toISOString() };
+    if (tpl === 'bienvenida') { patch.followups = Math.max(f, 1); patch.next_follow_up = addDays(today, 1); }
+    else if (tpl === 'seguimiento24') { patch.followups = Math.max(f, 2); patch.next_follow_up = addDays(today, 2); }
+    else if (tpl === 'seguimiento72') { patch.followups = Math.max(f, 3); patch.next_follow_up = addDays(today, 14); }
+    else if (tpl === 'filtro' || tpl === 'agendar') { patch.next_follow_up = addDays(today, 1); }
+    else if (tpl === 'recordatorio' || tpl === 'sin_capital') { patch.next_follow_up = null; }
+    return patch;
+  }
+  function nextStage(stage) {
+    var order = ['nuevo', 'video', 'calificado', 'reunion', 'cerrado'], i = order.indexOf(stage);
+    return i > -1 && i < order.length - 1 ? order[i + 1] : stage;
+  }
+  function dueToday(p, today) {
+    return p.stage !== 'cerrado' && p.stage !== 'perdido' && !!p.nextFollowUp && p.nextFollowUp <= today;
+  }
+  function fillProspect(tpl, p, settings) {
+    var map = { nombre: (p.name || '').split(' ')[0] || 'amigo', video: (settings && settings.video) || '(pega aquí el enlace de tu video)' };
+    return String(tpl).replace(/\{(\w+)\}/g, function (all, k) { return k in map ? map[k] : all; });
+  }
+
   var api = {
     parseOrderMessage: parseOrderMessage, parseMoney: parseMoney, fromShopifyOrder: fromShopifyOrder,
     normalizePhone: normalizePhone, validEcPhone: validEcPhone, waLink: waLink,
     riskLevel: riskLevel, DEFAULT_TEMPLATES: DEFAULT_TEMPLATES, fillTemplate: fillTemplate,
-    money: money, summarize: summarize, STATES: STATES
+    money: money, summarize: summarize, STATES: STATES,
+    PROSPECT_STAGES: PROSPECT_STAGES, PROSPECT_TEMPLATES: PROSPECT_TEMPLATES, isoDay: isoDay, addDays: addDays,
+    suggestProspect: suggestProspect, afterContact: afterContact, nextStage: nextStage, dueToday: dueToday, fillProspect: fillProspect
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ConfirmaCore = api;
@@ -277,7 +329,8 @@ var toastTimer;
 function toast(m){var t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.hidden=true},4000)}
 
 /* ---------- Estado ---------- */
-var S={loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'resumen',client:'pedidos'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
+var S={prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'pedidos'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
+function applyProspect(p,patch){if('stage' in patch)p.stage=patch.stage;if('followups' in patch)p.followups=patch.followups;if('next_follow_up' in patch)p.nextFollowUp=patch.next_follow_up;if('last_contact_at' in patch)p.lastContact=Date.parse(patch.last_contact_at);if('note' in patch)p.note=patch.note}
 function client(id){return S.clients.find(function(c){return c.id===id})}
 function currentClient(){return S.isAdmin?(S.viewAs?client(S.viewAs):null):S.clients[0]||null}
 function ordersOf(id){return S.orders.filter(function(o){return o.clientId===id}).sort(function(a,b){return b.created-a.created})}
@@ -302,6 +355,7 @@ function historyFor(o){
 var api;
 function dbToClient(r){return {id:r.id,name:r.name,store:r.store,phone:r.phone||'',email:r.email||'',price:Number(r.price)||0,advance:Number(r.advance),templates:r.templates||{},subStatus:r.sub_status,periodEnd:r.current_period_end,userId:r.user_id}}
 function dbToOrder(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.created_at),status:r.status,qty:r.qty,product:r.product,total:Number(r.total),name:r.name,phone:r.phone||'',province:r.province||'',city:r.city||'',address:r.address||'',guide:r.guide||'',number:r.number||'',history:{delivered:r.hist_delivered,returned:r.hist_returned},advanceAsked:!!r.advance_asked}}
+function dbToProspect(r){return {id:r.id,name:r.name,phone:r.phone,source:r.source,stage:r.stage,note:r.note||'',followups:r.followups||0,nextFollowUp:r.next_follow_up||null,lastContact:r.last_contact_at?Date.parse(r.last_contact_at):null,created:Date.parse(r.created_at)}}
 function dbToCheckout(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.updated_at||r.created_at),name:r.name||'',phone:r.phone||'',product:r.product||'',total:Number(r.total)||0,recoverUrl:r.recover_url||'',status:r.status}}
 
 function realApi(){
@@ -329,7 +383,9 @@ function realApi(){
       if(S.isAdmin||hasAccess(cur)){
         var o=fail(await sb.from('orders').select('*').order('created_at',{ascending:false}).limit(2000)); S.orders=(o.data||[]).map(dbToOrder);
         var k=fail(await sb.from('checkouts').select('*').in('status',['abierto','contactado']).order('updated_at',{ascending:false}).limit(500)); S.checkouts=(k.data||[]).map(dbToCheckout);
-        if(S.isAdmin){var p=fail(await sb.from('payments').select('*')); S.payments=p.data||[]}
+        if(S.isAdmin){var p=fail(await sb.from('payments').select('*')); S.payments=p.data||[];
+          var pr=fail(await sb.from('prospects').select('*').order('created_at',{ascending:false}).limit(1000)); S.prospects=(pr.data||[]).map(dbToProspect);
+          var st=fail(await sb.from('admin_settings').select('data').eq('id',1).maybeSingle()); S.settings=(st.data&&st.data.data)||{}}
       }else{S.orders=[];S.checkouts=[]}
     },
     updateOrder:async function(id,patch){var m={};
@@ -343,6 +399,10 @@ function realApi(){
     setSubStatus:async function(cid,st){fail(await sb.from('clients').update({sub_status:st}).eq('id',cid))},
     setPrice:async function(cid,price){fail(await sb.from('clients').update({price:price}).eq('id',cid))},
     setPaid:async function(cid,month,paid,amount){fail(await sb.from('payments').upsert({client_id:cid,month:month,paid:paid,amount:amount}))},
+    addProspect:async function(d){fail(await sb.from('prospects').insert({name:d.name,phone:d.phone,note:d.note||null,source:'Anuncio Meta',next_follow_up:C.isoDay(new Date())}))},
+    updateProspect:async function(id,patch){var m=Object.assign({},patch,{updated_at:new Date().toISOString()});fail(await sb.from('prospects').update(m).eq('id',id))},
+    deleteProspect:async function(id){fail(await sb.from('prospects').delete().eq('id',id))},
+    saveAdminSettings:async function(){fail(await sb.from('admin_settings').update({data:S.settings}).eq('id',1))},
     admin:fn
   };
 }
@@ -361,16 +421,21 @@ function demoApi(){
       o('c1','por_confirmar','Marta Solis','Organizador Cocina',26,'0960000005','Ambato',0,{delivered:5,returned:15}),
       o('c2','entregado','Iván Cruz','Aro De Luz',34.5,'0960000006','Quito',4),o('c2','por_confirmar','Sara León','Aro De Luz',34.5,'0960000007','Manta',1)];
     var checkouts=[{id:uid(),clientId:'c1',created:now-3600000,name:'Julia Rojas',phone:'0960000010',product:'Fuente De Chocolate',total:28,recoverUrl:'https://tienda.ejemplo/checkouts/abc',status:'abierto'}];
-    return {clients:clients,orders:orders,checkouts:checkouts,payments:[{client_id:'c2',month:mk,paid:true,amount:15}]};
+    var today=C.isoDay(new Date());
+    var prospects=[{id:uid(),name:'Marcos Andrade',phone:'0991230001',source:'Anuncio Meta',stage:'nuevo',note:'',followups:0,nextFollowUp:today,lastContact:null,created:now},
+      {id:uid(),name:'Lucía Mora',phone:'0991230002',source:'Anuncio Meta',stage:'nuevo',note:'Vio el anuncio del jabón',followups:1,nextFollowUp:today,lastContact:now-day,created:now-day},
+      {id:uid(),name:'Pablo Cevallos',phone:'0991230003',source:'Anuncio Meta',stage:'calificado',note:'Tiene los $450',followups:1,nextFollowUp:C.addDays(today,1),lastContact:now-day,created:now-3*day},
+      {id:uid(),name:'Elena Torres',phone:'0991230004',source:'Anuncio Meta',stage:'reunion',note:'Reunión mañana 10:00',followups:1,nextFollowUp:C.addDays(today,1),lastContact:now,created:now-4*day}];
+    return {clients:clients,orders:orders,checkouts:checkouts,prospects:prospects,settings:{},payments:[{client_id:'c2',month:mk,paid:true,amount:15}]};
   }
   var d; try{d=JSON.parse(localStorage.getItem(KEY))}catch(e){}
   if(!d) d=seed();
-  function save(){try{localStorage.setItem(KEY,JSON.stringify({clients:S.clients,orders:S.orders,checkouts:S.checkouts,payments:S.payments}))}catch(e){}}
+  function save(){try{localStorage.setItem(KEY,JSON.stringify({clients:S.clients,orders:S.orders,checkouts:S.checkouts,payments:S.payments,prospects:S.prospects,settings:S.settings}))}catch(e){}}
   return {
     demo:true,
     onAuth:function(){},
     login:async function(){}, logout:async function(){},
-    load:async function(){S.session={demo:true};S.isAdmin=true;if(d){S.clients=d.clients;S.orders=d.orders;S.checkouts=d.checkouts;S.payments=d.payments;d=null}},
+    load:async function(){S.session={demo:true};S.isAdmin=true;if(d){S.clients=d.clients;S.orders=d.orders;S.checkouts=d.checkouts;S.payments=d.payments;S.prospects=d.prospects||[];S.settings=d.settings||{};d=null}},
     updateOrder:async function(){save()}, addOrder:async function(cid,r,phone){var x=r;S.orders.push({id:uid(),clientId:cid,created:Date.now(),status:'por_confirmar',qty:x.qty,product:x.product,total:x.total,name:x.name,phone:phone,province:x.province,city:x.city,address:x.address,guide:'',number:'',history:{},advanceAsked:false});save()},
     saveSettings:async function(){save()}, setCheckout:async function(){save()}, setSubStatus:async function(){save()}, setPrice:async function(){save()},
     setPaid:async function(cid,month,paid,amount){var p=S.payments.find(function(x){return x.client_id===cid&&x.month===month});if(p){p.paid=paid;p.amount=amount}else S.payments.push({client_id:cid,month:month,paid:paid,amount:amount});save()},
@@ -380,6 +445,8 @@ function demoApi(){
       if(b.action==='recovery_link')return {link:'https://ejemplo.test/#recovery-demo'};
       return {ok:true};
     },
+    addProspect:async function(d){S.prospects.unshift({id:uid(),name:d.name,phone:d.phone,source:'Anuncio Meta',stage:'nuevo',note:d.note||'',followups:0,nextFollowUp:C.isoDay(new Date()),lastContact:null,created:Date.now()});save()},
+    updateProspect:async function(){save()}, deleteProspect:async function(id){S.prospects=S.prospects.filter(function(x){return x.id!==id});save()}, saveAdminSettings:async function(){save()},
     reset:function(){localStorage.removeItem(KEY);location.reload()}
   };
 }
@@ -523,16 +590,54 @@ function viewTemplates(c){
 }
 
 /* ===== ADMINISTRADOR ===== */
+var PTPL_LABEL={bienvenida:'Enviar bienvenida + video',seguimiento24:'Seguimiento (24 h)',seguimiento72:'Último seguimiento',filtro:'Preguntar el capital',agendar:'Proponer reunión',recordatorio:'Recordar la reunión',sin_capital:'Mensaje: aún sin capital'};
+var PTPL_NAMES={bienvenida:'Bienvenida + video',seguimiento24:'Seguimiento a las 24 h',seguimiento72:'Último seguimiento (72 h)',filtro:'Pregunta del capital',agendar:'Proponer reunión',recordatorio:'Recordatorio de reunión',sin_capital:'Aún sin capital'};
+function ptplOf(k){return (S.settings.templates&&S.settings.templates[k])||C.PROSPECT_TEMPLATES[k]}
+function stageLabel(st){var f=C.PROSPECT_STAGES.find(function(x){return x[0]===st});return f?f[1]:st}
+function prospectLink(p,k){return C.validEcPhone(p.phone)?C.waLink(p.phone,C.fillProspect(ptplOf(k),p,S.settings)):'#'}
+function prospectCard(p,today){
+  var sug=C.suggestProspect(p), due=C.dueToday(p,today), days=Math.floor((Date.now()-p.created)/86400000), ok=C.validEcPhone(p.phone);
+  var h='<div class="card"><div class="row"><div class="grow"><b>'+esc(p.name)+'</b><div class="mute">'+esc(p.phone)+' · llegó hace '+days+' día(s)'+(p.nextFollowUp?' · seguimiento '+(due?'<b>hoy</b>':esc(p.nextFollowUp)):'')+'</div></div>'
+   +'<span class="badge s-'+(p.stage==='perdido'?'cancelado':p.stage==='cerrado'?'entregado':p.stage==='nuevo'?'por_confirmar':'confirmado')+'">'+esc(stageLabel(p.stage))+'</span></div>';
+  if(!ok)h+='<div class="err">Teléfono no válido: corrígelo para abrir WhatsApp.</div>';
+  h+='<input style="margin-top:8px" data-act="pnote" data-id="'+esc(p.id)+'" value="'+esc(p.note)+'" placeholder="Nota (ej. quiere vender ropa)"><div class="actions">';
+  if(sug)h+='<a class="b p" target="_blank" rel="noopener" href="'+esc(prospectLink(p,sug))+'" data-act="pwa" data-id="'+esc(p.id)+'" data-k="'+sug+'">💬 '+PTPL_LABEL[sug]+'</a>';
+  if(p.stage==='video'||p.stage==='calificado')h+='<a class="b" target="_blank" rel="noopener" href="'+esc(prospectLink(p,'sin_capital'))+'" data-act="pwa" data-id="'+esc(p.id)+'" data-k="sin_capital">'+PTPL_LABEL.sin_capital+'</a>';
+  if(p.stage!=='cerrado'&&p.stage!=='perdido'){
+    var ns=C.nextStage(p.stage);
+    h+='<button class="b g" data-act="padv" data-id="'+esc(p.id)+'">✓ Pasó a: '+esc(stageLabel(ns))+'</button><button class="b d" data-act="plost" data-id="'+esc(p.id)+'">Perdido</button>';
+  }else h+='<button class="b" data-act="preopen" data-id="'+esc(p.id)+'">Reabrir</button><button class="b d" data-act="pdel" data-id="'+esc(p.id)+'">Borrar</button>';
+  return h+'</div></div>';
+}
+function viewProspects(){
+  var today=C.isoDay(new Date()),ps=S.prospects;
+  var due=ps.filter(function(p){return C.dueToday(p,today)}).sort(function(a,b){return a.nextFollowUp<b.nextFollowUp?-1:1});
+  var wait=ps.filter(function(p){return p.stage!=='cerrado'&&p.stage!=='perdido'&&!C.dueToday(p,today)});
+  var done=ps.filter(function(p){return p.stage==='cerrado'||p.stage==='perdido'});
+  var count=function(st){return ps.filter(function(p){return p.stage===st}).length};
+  var h='<div class="kpis">'+kpi(due.length,'Para escribir hoy')+kpi(count('nuevo'),'Escribieron')+kpi(count('video'),'Vieron el video')+kpi(count('calificado'),'Tienen el capital')+kpi(count('reunion'),'Con reunión')+kpi(count('cerrado'),'Cerraron')+'</div>'
+   +'<details class="card"><summary><b>+ Agregar prospecto</b></summary><div class="row"><div class="grow"><label>Nombre</label><input id="pr_name"></div><div class="grow"><label>WhatsApp</label><input id="pr_phone" inputmode="tel" placeholder="09XXXXXXXX"></div></div>'
+   +'<label>Nota (opcional)</label><input id="pr_note" placeholder="Ej. escribió por el anuncio de ropa"><div id="prErr" class="err"></div><div class="actions"><button class="b p" data-act="padd">Guardar</button></div></details>'
+   +'<details class="card"><summary class="mute">Mis mensajes y el enlace de mi video</summary><label>Enlace del video de bienvenida</label><input data-act="pvideo" value="'+esc(S.settings.video||'')+'" placeholder="https://...">'
+   +Object.keys(PTPL_NAMES).map(function(k){return '<label>'+esc(PTPL_NAMES[k])+'</label><textarea data-act="ptpl" data-k="'+k+'">'+esc(ptplOf(k))+'</textarea>'}).join('')
+   +'<div class="mute" style="margin-top:6px">Puedes usar {nombre} y {video}.</div></details>';
+  h+='<h2 style="margin:14px 0 8px">Para escribir hoy ('+due.length+')</h2>'+(due.length?due.map(function(p){return prospectCard(p,today)}).join(''):'<div class="card mute">No tienes seguimientos pendientes hoy. 🎉</div>');
+  if(wait.length)h+='<h2 style="margin:14px 0 8px">En seguimiento ('+wait.length+')</h2>'+wait.map(function(p){return prospectCard(p,today)}).join('');
+  if(done.length)h+='<details style="margin-top:14px"><summary class="mute">Cerrados y perdidos ('+done.length+')</summary>'+done.map(function(p){return prospectCard(p,today)}).join('')+'</details>';
+  return h;
+}
 function paidThisMonth(cid){var p=S.payments.find(function(x){return x.client_id===cid&&x.month===monthKey()});return !!(p&&p.paid)}
 function renderAdmin(){
   var tab=S.tab.admin;
-  nav([['resumen','Resumen'],['clientes','Clientes y cobros'],['nuevo','Agregar cliente']],tab,'admin');
+  var nDue=S.prospects.filter(function(x){return C.dueToday(x,C.isoDay(new Date()))}).length;
+  nav([['prospectos','Prospectos'+(nDue?' ('+nDue+')':'')],['resumen','Resumen'],['clientes','Clientes y cobros'],['nuevo','Agregar cliente']],tab,'admin');
   var rows=S.clients.map(function(c){
     var s=C.summarize(ordersOf(c.id).map(function(o){return Object.assign({},o,{history:historyFor(o)})}));
     return {c:c,s:s,pend:ordersOf(c.id).filter(function(o){return o.status==='por_confirmar'}).length};
   });
   var h='';
-  if(tab==='resumen'){
+  if(tab==='prospectos'){h=viewProspects()}
+  else if(tab==='resumen'){
     var activos=rows.filter(function(r){return r.c.subStatus==='active'}).length;
     var mrr=rows.filter(function(r){return r.c.subStatus==='active'}).reduce(function(a,r){return a+r.c.price},0);
     var manual=S.payments.filter(function(p){return p.month===monthKey()&&p.paid}).reduce(function(a,p){return a+Number(p.amount)},0);
@@ -601,6 +706,14 @@ document.addEventListener('click',function(e){
     run(async function(){var r=await api.admin(b);await api.load();
       S.created='<div class="alert info"><b>Cliente creado: '+esc(b.name)+'.</b> Envíale este enlace por WhatsApp para que cree su contraseña (caduca en 1 hora). Solo a esa persona.</div>'+infoBox('Enlace de acceso',r.link||'(no se pudo generar; usa «Generar enlace de acceso» en Clientes)')+infoBox('Webhook de Shopify de su tienda',r.webhook_url||'')});
   }
+  else if(a==='padd'){var pn=$('#pr_name').value.trim(),pp=$('#pr_phone').value.trim();
+    if(!pn||!C.validEcPhone(pp)){$('#prErr').textContent='Escribe el nombre y un WhatsApp válido (ej. 0991234567).';return}
+    run(async function(){await api.addProspect({name:pn,phone:pp,note:$('#pr_note').value.trim()});await api.load()})}
+  else if(a==='pwa'){var pr=S.prospects.find(function(x){return x.id===id});if(pr){var pt=C.afterContact(pr,t.dataset.k,C.isoDay(new Date()));applyProspect(pr,pt);api.updateProspect(id,pt).catch(function(){});setTimeout(render,400)}}
+  else if(a==='padv'){var pa=S.prospects.find(function(x){return x.id===id});run(async function(){var ptc={stage:C.nextStage(pa.stage),followups:0,next_follow_up:C.isoDay(new Date())};applyProspect(pa,ptc);await api.updateProspect(id,ptc)})}
+  else if(a==='plost'){var pl=S.prospects.find(function(x){return x.id===id});run(async function(){var ptc={stage:'perdido',next_follow_up:null};applyProspect(pl,ptc);await api.updateProspect(id,ptc)})}
+  else if(a==='preopen'){var po=S.prospects.find(function(x){return x.id===id});run(async function(){var ptc={stage:'nuevo',followups:0,next_follow_up:C.isoDay(new Date())};applyProspect(po,ptc);await api.updateProspect(id,ptc)})}
+  else if(a==='pdel'){if(!confirm('¿Borrar este prospecto?'))return;run(async function(){await api.deleteProspect(id);S.prospects=S.prospects.filter(function(x){return x.id!==id})})}
   else if(a==='reset'&&api.reset){if(confirm('¿Borrar todo y volver a los ejemplos?'))api.reset()}
 });
 document.addEventListener('change',function(e){
@@ -614,6 +727,9 @@ document.addEventListener('change',function(e){
   else if(a==='days'){S.days=Number(t.value);render()}
   else if(a==='advance'&&c){c.advance=Math.max(0,Number(t.value)||0);run(async function(){await api.saveSettings(c)})}
   else if(a==='tpl'&&c){c.templates=c.templates||{};c.templates[t.dataset.k]=t.value;run(async function(){await api.saveSettings(c)})}
+  else if(a==='pnote'){var pn2=S.prospects.find(function(x){return x.id===id});if(pn2){pn2.note=t.value.trim();run(async function(){await api.updateProspect(id,{note:pn2.note})})}}
+  else if(a==='pvideo'){S.settings.video=t.value.trim();run(async function(){await api.saveAdminSettings()})}
+  else if(a==='ptpl'){S.settings.templates=S.settings.templates||{};S.settings.templates[t.dataset.k]=t.value;run(async function(){await api.saveAdminSettings()})}
   else if(a==='price'){var cl=client(id);cl.price=Math.max(0,Number(t.value)||0);run(async function(){await api.setPrice(id,cl.price)})}
 });
 document.addEventListener('keydown',function(e){
