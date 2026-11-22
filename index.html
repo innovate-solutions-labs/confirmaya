@@ -250,15 +250,17 @@ window.CONFIRMAYA_CONFIG = {
 
 
   /* ---------- Prospectos de la agencia (embudo) ---------- */
-  var PROSPECT_STAGES = [['nuevo', 'Escribió'], ['video', 'Vio el video'], ['calificado', 'Tiene el capital'], ['reunion', 'Reunión agendada'], ['cerrado', 'Cerró'], ['perdido', 'Perdido']];
+  var PROSPECT_STAGES = [['nuevo', 'Escribió'], ['video', 'Respondió'], ['calificado', 'Le hace sentido'], ['reunion', 'Reunión agendada'], ['cerrado', 'Cerró'], ['perdido', 'Perdido']];
   var PROSPECT_TEMPLATES = {
-    bienvenida: 'Hola {nombre} 👋 Gracias por escribirnos. Soy William, de Innovate Solutions. Te dejo un video corto donde te explico qué hacemos, cómo funciona y cuál es el objetivo: {video}\n\n¿Lo ves y me cuentas qué te pareció?',
+    bienvenida: 'Hola {nombre} 👋 Soy William, de Innovate Solutions. Gracias por escribirnos. Te mando un video de 30 segundos, hecho con un presentador virtual, para que veas cómo funciona. {video}\n\nCuéntame, ¿qué te gustaría vender o a qué te dedicas hoy?',
     seguimiento24: 'Hola {nombre}, ¿pudiste ver el video que te envié? Si tienes alguna duda, te la respondo por aquí 😊',
     seguimiento72: 'Hola {nombre}, no quiero ser insistente. Te escribo por última vez: si todavía te interesa tener tu tienda online, dime y agendamos una llamada corta. Si no es el momento, sin problema 🙌',
-    filtro: 'Genial {nombre}. Para arrancar la inversión es de unos $450 el primer mes (mensualidad de la agencia, publicidad en Meta, Shopify y dominio). ¿Cuentas hoy con ese capital para empezar?\n\nResponde:\n1 = Sí, lo tengo\n2 = Me falta un poco\n3 = Tengo menos',
-    agendar: 'Perfecto {nombre} 🙌 Agendemos una videollamada de unos 20 minutos para explicarte todo paso a paso. ¿Qué día y hora de esta semana te acomoda?',
-    recordatorio: 'Hola {nombre}, te recuerdo nuestra reunión de hoy. Si necesitas cambiar la hora, avísame por aquí 🙌',
-    sin_capital: 'Gracias por tu sinceridad, {nombre}. Cuando tengas el capital para arrancar, escríbeme y empezamos. Mientras tanto, cualquier duda me la haces por aquí 😊'
+    contexto: 'Qué buena idea, {nombre}. Con eso se puede armar algo bueno. Te cuento rápido cómo trabajamos: nosotros hacemos tu tienda, los anuncios y los videos. Tú solo confirmas los pedidos por WhatsApp y los sigues hasta la entrega.\n\n¿Te hace sentido hasta aquí?',
+    costo: 'Para arrancar la inversión es de unos $450 el primer mes. Casi la mitad ($180) es la publicidad en Meta, que se paga directo desde tu cuenta de anuncios. No prometemos ventas: probamos productos con poco presupuesto y solo subimos lo que funciona.\n\n¿Cómo lo ves?\n\n1️⃣ Lo tengo\n2️⃣ Me falta un poco\n3️⃣ Tengo menos',
+    agendar: 'Perfecto, {nombre} 🙌 Hagamos una llamada de 20 minutos para mostrarte cómo se ve una tienda y el desglose completo. ¿Te va mejor mañana o pasado mañana? ¿En la mañana o en la tarde?',
+    plazo: 'Sin problema, {nombre}. ¿Para cuándo crees que lo tendrías? Te escribo ese día y lo vemos con calma.',
+    sin_capital: 'Gracias por decírmelo, {nombre}. Cuando quieras arrancar, escríbeme y lo vemos. Mientras tanto, cualquier duda me la haces por aquí 😊',
+    recordatorio: 'Hola {nombre}, te recuerdo nuestra reunión de hoy. Si necesitas cambiar la hora, avísame por aquí 🙌'
   };
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
   function isoDay(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
@@ -271,8 +273,8 @@ window.CONFIRMAYA_CONFIG = {
     if (!p || p.stage === 'cerrado' || p.stage === 'perdido') return null;
     var f = Number(p.followups) || 0;
     if (p.stage === 'nuevo') return f === 0 ? 'bienvenida' : f === 1 ? 'seguimiento24' : 'seguimiento72';
-    if (p.stage === 'video') return 'filtro';
-    if (p.stage === 'calificado') return 'agendar';
+    if (p.stage === 'video') return 'contexto';
+    if (p.stage === 'calificado') return 'costo';
     if (p.stage === 'reunion') return 'recordatorio';
     return null;
   }
@@ -282,8 +284,10 @@ window.CONFIRMAYA_CONFIG = {
     if (tpl === 'bienvenida') { patch.followups = Math.max(f, 1); patch.next_follow_up = addDays(today, 1); }
     else if (tpl === 'seguimiento24') { patch.followups = Math.max(f, 2); patch.next_follow_up = addDays(today, 2); }
     else if (tpl === 'seguimiento72') { patch.followups = Math.max(f, 3); patch.next_follow_up = addDays(today, 14); }
-    else if (tpl === 'filtro' || tpl === 'agendar') { patch.next_follow_up = addDays(today, 1); }
-    else if (tpl === 'recordatorio' || tpl === 'sin_capital') { patch.next_follow_up = null; }
+    else if (tpl === 'contexto' || tpl === 'costo' || tpl === 'agendar') { patch.next_follow_up = addDays(today, 1); }
+    else if (tpl === 'plazo') { patch.next_follow_up = addDays(today, 7); }
+    else if (tpl === 'sin_capital') { patch.next_follow_up = addDays(today, 30); }
+    else if (tpl === 'recordatorio') { patch.next_follow_up = null; }
     return patch;
   }
   function nextStage(stage) {
@@ -294,8 +298,9 @@ window.CONFIRMAYA_CONFIG = {
     return p.stage !== 'cerrado' && p.stage !== 'perdido' && !!p.nextFollowUp && p.nextFollowUp <= today;
   }
   function fillProspect(tpl, p, settings) {
-    var map = { nombre: (p.name || '').split(' ')[0] || 'amigo', video: (settings && settings.video) || '(pega aquí el enlace de tu video)' };
-    return String(tpl).replace(/\{(\w+)\}/g, function (all, k) { return k in map ? map[k] : all; });
+    var v = settings && settings.video ? 'Míralo aquí: ' + settings.video : '';
+    var map = { nombre: (p.name || '').split(' ')[0] || 'amigo', video: v };
+    return String(tpl).replace(/\{(\w+)\}/g, function (all, k) { return k in map ? map[k] : all; }).replace(/[ \t]+\n/g, '\n').replace(/[ \t]+$/g, '');
   }
 
   var api = {
@@ -590,8 +595,8 @@ function viewTemplates(c){
 }
 
 /* ===== ADMINISTRADOR ===== */
-var PTPL_LABEL={bienvenida:'Enviar bienvenida + video',seguimiento24:'Seguimiento (24 h)',seguimiento72:'Último seguimiento',filtro:'Preguntar el capital',agendar:'Proponer reunión',recordatorio:'Recordar la reunión',sin_capital:'Mensaje: aún sin capital'};
-var PTPL_NAMES={bienvenida:'Bienvenida + video',seguimiento24:'Seguimiento a las 24 h',seguimiento72:'Último seguimiento (72 h)',filtro:'Pregunta del capital',agendar:'Proponer reunión',recordatorio:'Recordatorio de reunión',sin_capital:'Aún sin capital'};
+var PTPL_LABEL={bienvenida:'Enviar bienvenida',seguimiento24:'Seguimiento (24 h)',seguimiento72:'Último seguimiento',contexto:'Responderle: cómo trabajamos',costo:'Enviar el costo',agendar:'Dijo 1: proponer reunión',plazo:'Dijo 2: pedir plazo',sin_capital:'Dijo 3: sin capital por ahora',recordatorio:'Recordar la reunión'};
+var PTPL_NAMES={bienvenida:'1. Bienvenida (el video lo adjuntas tú)',contexto:'2. Cuando responde qué quiere vender',costo:'3. El costo, con opciones 1, 2 y 3',agendar:'4a. Dijo 1: proponer reunión',plazo:'4b. Dijo 2: pedir plazo',sin_capital:'4c. Dijo 3: sin capital por ahora',seguimiento24:'Seguimiento a las 24 h',seguimiento72:'Último seguimiento (72 h)',recordatorio:'Recordatorio de reunión'};
 function ptplOf(k){return (S.settings.templates&&S.settings.templates[k])||C.PROSPECT_TEMPLATES[k]}
 function stageLabel(st){var f=C.PROSPECT_STAGES.find(function(x){return x[0]===st});return f?f[1]:st}
 function prospectLink(p,k){return C.validEcPhone(p.phone)?C.waLink(p.phone,C.fillProspect(ptplOf(k),p,S.settings)):'#'}
@@ -600,9 +605,10 @@ function prospectCard(p,today){
   var h='<div class="card"><div class="row"><div class="grow"><b>'+esc(p.name)+'</b><div class="mute">'+esc(p.phone)+' · llegó hace '+days+' día(s)'+(p.nextFollowUp?' · seguimiento '+(due?'<b>hoy</b>':esc(p.nextFollowUp)):'')+'</div></div>'
    +'<span class="badge s-'+(p.stage==='perdido'?'cancelado':p.stage==='cerrado'?'entregado':p.stage==='nuevo'?'por_confirmar':'confirmado')+'">'+esc(stageLabel(p.stage))+'</span></div>';
   if(!ok)h+='<div class="err">Teléfono no válido: corrígelo para abrir WhatsApp.</div>';
+  if(sug==='bienvenida'&&!S.settings.video)h+='<div class="mute" style="margin-top:6px">Después de enviar este mensaje, adjunta tu video en el chat.</div>';
   h+='<input style="margin-top:8px" data-act="pnote" data-id="'+esc(p.id)+'" value="'+esc(p.note)+'" placeholder="Nota (ej. quiere vender ropa)"><div class="actions">';
   if(sug)h+='<a class="b p" target="_blank" rel="noopener" href="'+esc(prospectLink(p,sug))+'" data-act="pwa" data-id="'+esc(p.id)+'" data-k="'+sug+'">💬 '+PTPL_LABEL[sug]+'</a>';
-  if(p.stage==='video'||p.stage==='calificado')h+='<a class="b" target="_blank" rel="noopener" href="'+esc(prospectLink(p,'sin_capital'))+'" data-act="pwa" data-id="'+esc(p.id)+'" data-k="sin_capital">'+PTPL_LABEL.sin_capital+'</a>';
+  if(p.stage==='calificado')['agendar','plazo','sin_capital'].forEach(function(k){h+='<a class="b" target="_blank" rel="noopener" href="'+esc(prospectLink(p,k))+'" data-act="pwa" data-id="'+esc(p.id)+'" data-k="'+k+'">'+PTPL_LABEL[k]+'</a>'});
   if(p.stage!=='cerrado'&&p.stage!=='perdido'){
     var ns=C.nextStage(p.stage);
     h+='<button class="b g" data-act="padv" data-id="'+esc(p.id)+'">✓ Pasó a: '+esc(stageLabel(ns))+'</button><button class="b d" data-act="plost" data-id="'+esc(p.id)+'">Perdido</button>';
@@ -615,12 +621,12 @@ function viewProspects(){
   var wait=ps.filter(function(p){return p.stage!=='cerrado'&&p.stage!=='perdido'&&!C.dueToday(p,today)});
   var done=ps.filter(function(p){return p.stage==='cerrado'||p.stage==='perdido'});
   var count=function(st){return ps.filter(function(p){return p.stage===st}).length};
-  var h='<div class="kpis">'+kpi(due.length,'Para escribir hoy')+kpi(count('nuevo'),'Escribieron')+kpi(count('video'),'Vieron el video')+kpi(count('calificado'),'Tienen el capital')+kpi(count('reunion'),'Con reunión')+kpi(count('cerrado'),'Cerraron')+'</div>'
+  var h='<div class="kpis">'+kpi(due.length,'Para escribir hoy')+kpi(count('nuevo'),'Escribieron')+kpi(count('video'),'Respondieron')+kpi(count('calificado'),'Les hace sentido')+kpi(count('reunion'),'Con reunión')+kpi(count('cerrado'),'Cerraron')+'</div>'
    +'<details class="card"><summary><b>+ Agregar prospecto</b></summary><div class="row"><div class="grow"><label>Nombre</label><input id="pr_name"></div><div class="grow"><label>WhatsApp</label><input id="pr_phone" inputmode="tel" placeholder="09XXXXXXXX"></div></div>'
    +'<label>Nota (opcional)</label><input id="pr_note" placeholder="Ej. escribió por el anuncio de ropa"><div id="prErr" class="err"></div><div class="actions"><button class="b p" data-act="padd">Guardar</button></div></details>'
-   +'<details class="card"><summary class="mute">Mis mensajes y el enlace de mi video</summary><label>Enlace del video de bienvenida</label><input data-act="pvideo" value="'+esc(S.settings.video||'')+'" placeholder="https://...">'
+   +'<details class="card"><summary class="mute">Mis mensajes y el enlace de mi video</summary><label>Enlace del video (opcional; si lo dejas vacío, adjuntas el video en el chat)</label><input data-act="pvideo" value="'+esc(S.settings.video||'')+'" placeholder="https://...">'
    +Object.keys(PTPL_NAMES).map(function(k){return '<label>'+esc(PTPL_NAMES[k])+'</label><textarea data-act="ptpl" data-k="'+k+'">'+esc(ptplOf(k))+'</textarea>'}).join('')
-   +'<div class="mute" style="margin-top:6px">Puedes usar {nombre} y {video}.</div></details>';
+   +'<div class="mute" style="margin-top:6px">Puedes usar {nombre} y {video}. Si no hay enlace de video, {video} no aparece.</div></details>';
   h+='<h2 style="margin:14px 0 8px">Para escribir hoy ('+due.length+')</h2>'+(due.length?due.map(function(p){return prospectCard(p,today)}).join(''):'<div class="card mute">No tienes seguimientos pendientes hoy. 🎉</div>');
   if(wait.length)h+='<h2 style="margin:14px 0 8px">En seguimiento ('+wait.length+')</h2>'+wait.map(function(p){return prospectCard(p,today)}).join('');
   if(done.length)h+='<details style="margin-top:14px"><summary class="mute">Cerrados y perdidos ('+done.length+')</summary>'+done.map(function(p){return prospectCard(p,today)}).join('')+'</details>';
