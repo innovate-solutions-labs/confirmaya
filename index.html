@@ -750,6 +750,8 @@ function viewProspects(){
   if(done.length)h+='<details style="margin-top:14px"><summary class="mute">Cerrados y perdidos ('+done.length+')</summary>'+done.map(function(p){return prospectCard(p,today)}).join('')+'</details>';
   return h;
 }
+var BOT_WELCOME_DEFAULT='Hola {nombre} 👋 Soy el asistente virtual de Innovate Solutions. Gracias por escribirnos. Te envío un video de 30 segundos, hecho con un presentador virtual, para que veas cómo funciona.\n\nCuéntame, ¿qué te gustaría vender o a qué te dedicas hoy?';
+var BOT_FU24_DEFAULT='Hola {nombre} 👋 ¿Pudiste ver el video que te envié? Si tienes alguna duda, te la respondo por aquí 😊';
 function botBadge(p){return p.botMode==='pausado'?'<span class="badge s-cancelado">Bot pausado</span>':'<span class="badge s-entregado">Bot activo</span>'}
 function viewBot(){
   var st=S.botStatus,h='<div class="card"><h2>🤖 Bot de WhatsApp</h2><div class="mute">Responde solo a los prospectos que llegan de tus anuncios. Te consulta únicamente para confirmar reuniones.</div>'
@@ -769,6 +771,10 @@ function viewBot(){
   if(!att.length)h+='<div class="card mute">Nada pendiente.</div>';
   h+=att.map(function(p){return '<div class="card"><div class="row"><div class="grow"><b>'+esc(p.name)+'</b> · '+esc(p.phone)+'<div class="mute">'+esc(p.attentionReason||'Revisa la conversación')+'</div></div>'+botBadge(p)+'</div><div class="actions"><button class="b" data-act="aopen2" data-id="'+esc(p.id)+'">Ver conversación</button><button class="b" data-act="attok" data-id="'+esc(p.id)+'">Ya lo atendí</button><button class="b" data-act="botmode" data-id="'+esc(p.id)+'">'+(p.botMode==='pausado'?'▶ Reactivar bot':'⏸ Pausar bot')+'</button></div></div>'}).join('');
   var sim=S.prospects.filter(function(x){return x.source==='Simulador'});
+  h+='<h2 style="margin:14px 0 8px">Mensajes del bot</h2><div class="card"><div class="mute">Estos son los mensajes fijos que el bot envía solo. Puedes editarlos; usa {nombre} para el nombre de la persona.</div>'
+   +'<label>1. Bienvenida (se envía en el primer contacto, seguida de tu video)</label><textarea data-act="pbw" style="min-height:130px">'+esc(S.settings.botWelcome||BOT_WELCOME_DEFAULT)+'</textarea>'
+   +'<label>2. Seguimiento a las 24 horas (si la persona no responde)</label><textarea data-act="pfu" style="min-height:80px">'+esc(S.settings.botFollowup24||BOT_FU24_DEFAULT)+'</textarea>'
+   +'<div class="mute" style="margin-top:8px">El resto de la conversación (costo, objeciones, reuniones) lo responde el bot con la <b>base de conocimiento</b> de la pestaña Prospectos → «Mis mensajes y el enlace de mi video».</div></div>';
   h+='<h2 style="margin:14px 0 8px">Probador (tú haces de prospecto)</h2><div class="card"><div class="mute">Escribe como si fueras alguien que llegó de un anuncio y mira cómo responde el bot. No envía nada a WhatsApp.</div>';
   if(!sim.length)h+='<div class="actions"><button class="b p" data-act="simnew">Crear conversación de prueba</button></div>';
   else{var cur=sim.find(function(x){return x.id===(S.botSim&&S.botSim.id)})||sim[0];
@@ -917,6 +923,8 @@ document.addEventListener('change',function(e){
   else if(a==='advance'&&c){c.advance=Math.max(0,Number(t.value)||0);run(async function(){await api.saveSettings(c)})}
   else if(a==='tpl'&&c){c.templates=c.templates||{};c.templates[t.dataset.k]=t.value;run(async function(){await api.saveSettings(c)})}
   else if(a==='pnote'){var pn2=S.prospects.find(function(x){return x.id===id});if(pn2){pn2.note=t.value.trim();run(async function(){await api.updateProspect(id,{note:pn2.note})})}}
+  else if(a==='pbw'){S.settings.botWelcome=t.value.trim();run(async function(){await api.saveAdminSettings();toast('Bienvenida del bot guardada')})}
+  else if(a==='pfu'){S.settings.botFollowup24=t.value.trim();run(async function(){await api.saveAdminSettings();toast('Seguimiento guardado')})}
   else if(a==='pkb'){S.settings.kb=t.value.trim();run(async function(){await api.saveAdminSettings()})}
   else if(a==='pvideo'){S.settings.video=t.value.trim();run(async function(){await api.saveAdminSettings()})}
   else if(a==='ptpl'){S.settings.templates=S.settings.templates||{};S.settings.templates[t.dataset.k]=t.value;run(async function(){await api.saveAdminSettings()})}
