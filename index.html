@@ -344,54 +344,110 @@ window.CONFIRMAYA_CONFIG = {
     } catch (e) { return String(date); }
   }
 
-  /* ---------- Semáforo de zonas de entrega por transportadora ---------- */
+  /* ---------- Zonas peligrosas / sin cobertura por transportadora ---------- */
+  var MAIN_CARRIERS = ['SERVIENTREGA', 'GINTRACOM'];   // las que se usan siempre; las demás solo informan
+  var SECTOR_NOISE = /\b(parroquia|caserio|sector|cdla|ciudadela|barrio|recinto|urbanizacion|urb|cooperativa|coop|precoop|lot|comuna|via|av|avenida|calle)\b/g;
   function normPlace(t) {
     return String(t == null ? '' : t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
       .replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
   }
-  function zoneStatus(t) {
-    var x = normPlace(t);
-    if (!x) return '';
-    if (/^(verde|green|ok|si|normal|segura|seguro|cobertura|entrega)/.test(x)) return 'verde';
-    if (/^(amarill|yellow|medio|media|riesgo medio|restring|parcial|oficina)/.test(x)) return 'amarillo';
-    if (/^(rojo|red|no|peligros|alto|sin cobertura|no entrega|restringid)/.test(x)) return 'rojo';
-    return '';
-  }
-  // Texto pegado desde Excel/CSV: lugar, transportadora, semáforo, nota (con o sin encabezado; separa por tab, ; o ,)
-  function parseZones(text) {
-    var lines = String(text || '').split(/\r?\n/).filter(function (l) { return l.trim(); });
-    var out = [], bad = [];
-    lines.forEach(function (line, i) {
-      var sep = line.indexOf('\t') > -1 ? '\t' : line.indexOf(';') > -1 ? ';' : ',';
-      var c = line.split(sep).map(function (x) { return x.trim().replace(/^"|"$/g, ''); });
-      var st = zoneStatus(c[2]);
-      if (i === 0 && !st) return; // encabezado
-      if (!c[0] || !c[1] || !st) { bad.push(i + 1); return; }
-      out.push({ place: c[0], place_norm: normPlace(c[0]), carrier: c[1], status: st, note: c.slice(3).join(' ').trim() });
+  function keyOf(t) { return normPlace(t).replace(SECTOR_NOISE, ' ').replace(/\s+/g, ' ').trim(); }
+  function cell(v) { return v == null ? '' : String(v).replace(/\s+/g, ' ').trim(); }
+
+  // sheets = { NOMBRE_HOJA: [[celdas...], ...] } (así sale de leer el Excel). Devuelve filas listas para la base.
+  function parseDangerSheets(sheets) {
+    var rows = [], counts = {};
+    function push(r) {
+      r.city_norm = normPlace(r.city); if (!r.city_norm) return;
+      var keys = [];
+      [r.zone, r.sector].forEach(function (x) { var k = keyOf(x); if (k.length >= 4 && keys.indexOf(k) < 0) keys.push(k); });
+      r.keys = keys; rows.push(r); counts[r.carrier] = (counts[r.carrier] || 0) + 1;
+    }
+    Object.keys(sheets).forEach(function (name) {
+      var up = normPlace(name).toUpperCase(), data = sheets[name] || [], carrier = '';
+      if (up.indexOf('SERVIENTREGA') > -1) carrier = 'SERVIENTREGA';
+      else if (up.indexOf('LAAR') > -1) carrier = 'LAARCOURIER';
+      else if (up.indexOf('GINTRACOM') > -1) carrier = 'GINTRACOM';
+      else if (up.indexOf('VELOCES') > -1) carrier = 'VELOCES';
+      if (!carrier) return;
+      var prov = '', city = '';
+      data.forEach(function (r) {
+        r = (r || []).map(cell);
+        if (carrier === 'SERVIENTREGA') {
+          // ZONA | CL CABECERO | CIUDAD | ZONA PELIGROSA | MENSAJE | OPCIÓN 1 | OPCIÓN 2
+          if (!r[2] || !r[3] || normPlace(r[3]) === 'zona peligrosa') return;
+          push({ carrier: carrier, province: '', city: r[2], zone: r[3], sector: '', kind: 'sin_cobertura', message: r[4], office1: r[5], office2: r[6] });
+        } else if (carrier === 'LAARCOURIER') {
+          // PROVINCIA | CIUDAD | PARROQUIA | ZONA PELIGROSA | SECTOR
+          if (!r[1] || !r[3] || normPlace(r[3]) === 'zona peligrosa') return;
+          push({ carrier: carrier, province: r[0], city: r[1], zone: r[3], sector: r[4], kind: 'peligrosa', message: '', office1: '', office2: '' });
+        } else if (carrier === 'GINTRACOM') {
+          // Provincia | Destinos | Zona peligrosa | Observación (provincia y destino se repiten solo al cambiar)
+          if (normPlace(r[0]) === 'provincia' || normPlace(r[1]) === 'destinos') return;
+          if (r[0]) prov = r[0]; if (r[1]) city = r[1];
+          if (!city || !r[2]) return;
+          push({ carrier: carrier, province: prov, city: city, zone: r[2], sector: '', kind: 'peligrosa', message: r[3], office1: '', office2: '' });
+        } else if (carrier === 'VELOCES') {
+          // Pais | Provincia | Canton | Parroquia | Barrios | Zona | Clasificación | L M X J V S | Semaforización | Recolección
+          if (!r[2] || normPlace(r[1]) === 'provincia') return;
+          var sem = normPlace(r[13]);
+          var kind = sem.indexOf('peligros') > -1 ? 'peligrosa' : sem.indexOf('cuidado') > -1 ? 'cuidado' : '';
+          if (!kind) return;
+          push({ carrier: carrier, province: r[1], city: r[2], zone: r[3], sector: r[4], kind: kind, message: '', office1: '', office2: '' });
+        }
+      });
     });
-    return { rows: out, bad: bad };
+    return { rows: rows, counts: counts };
   }
-  // zones = filas de delivery_zones; devuelve las transportadoras de esa ciudad y un consejo
-  function zoneAdvice(zones, city) {
-    var key = normPlace(city);
-    if (!key || !zones || !zones.length) return null;
-    var list = zones.filter(function (z) { return z.place_norm === key; });
-    if (!list.length) list = zones.filter(function (z) { return z.place_norm.indexOf(key) > -1 || key.indexOf(z.place_norm) > -1; });
-    if (!list.length) return { known: false, list: [], level: 'sin', text: 'Sin información de esta zona: confirma con el cliente que tu transportadora llega.' };
+
+  // zones = filas de danger_zones. Devuelve el semáforo de cada transportadora para ese pedido y un consejo.
+  function dangerAdvice(zones, order) {
+    if (!zones || !zones.length) return null;
+    var city = normPlace(order && order.city);
+    if (!city) return null;
+    var hay = ' ' + normPlace((order.address || '') + ' ' + (order.city || '')) + ' ';
+    var carriers = [], seen = {};
+    zones.forEach(function (z) { if (!seen[z.carrier]) { seen[z.carrier] = 1; carriers.push(z.carrier); } });
+    carriers.sort(function (a, b) {
+      var ia = MAIN_CARRIERS.indexOf(a), ib = MAIN_CARRIERS.indexOf(b);
+      return (ia < 0 ? 9 : ia) - (ib < 0 ? 9 : ib);
+    });
+    var out = carriers.map(function (c) {
+      var inCity = zones.filter(function (z) { return z.carrier === c && (z.city_norm === city || z.city_norm.indexOf(city) > -1 || city.indexOf(z.city_norm) > -1); });
+      var hits = inCity.filter(function (z) { return (z.keys || []).some(function (k) { return k && hay.indexOf(' ' + k + ' ') > -1; }); });
+      var status = 'verde', text = 'Sin zonas peligrosas registradas en esta ciudad.';
+      if (hits.length) {
+        var worst = hits.some(function (z) { return z.kind !== 'cuidado'; }) ? 'rojo' : 'amarillo';
+        status = worst;
+        text = (worst === 'rojo' ? 'La dirección coincide con zona ' + (hits[0].kind === 'sin_cobertura' ? 'sin cobertura' : 'peligrosa') : 'La dirección coincide con zona de cuidado') + ': ' + hits.map(function (z) { return z.zone + (z.sector ? ' / ' + z.sector : ''); }).slice(0, 3).join(', ') + '.';
+      } else if (inCity.length) {
+        status = 'amarillo';
+        text = 'Hay ' + inCity.length + ' zonas con restricción en esta ciudad; confirma que la dirección no esté en ellas.';
+      }
+      var offices = [];
+      hits.forEach(function (z) { [z.office1, z.office2].forEach(function (o) { if (o && offices.indexOf(o) < 0) offices.push(o); }); });
+      var meet = hits.some(function (z) { return /punto de encuentro/i.test(z.message || ''); });
+      return { carrier: c, main: MAIN_CARRIERS.indexOf(c) > -1, status: status, text: text, offices: offices, meet: meet, zonesInCity: inCity.length };
+    });
     var rank = { verde: 0, amarillo: 1, rojo: 2 };
-    var best = list.slice().sort(function (a, b) { return rank[a.status] - rank[b.status]; })[0];
-    var green = list.filter(function (z) { return z.status === 'verde'; });
-    var bad = list.filter(function (z) { return z.status === 'rojo'; });
-    var level = best.status, text = '';
-    if (best.status === 'verde' && !bad.length) text = 'Zona segura.';
-    else if (green.length) text = bad.length
-      ? 'Zona de riesgo con ' + bad.map(function (z) { return z.carrier; }).join(' y ') + '. Cambia la transportadora a ' + green.map(function (z) { return z.carrier; }).join(' o ') + ' en Dropi.'
-      : 'Zona con precaución en alguna transportadora; ' + green[0].carrier + ' llega bien.';
-    else text = best.status === 'amarillo'
-      ? 'Zona con restricciones. Revisa las oficinas cercanas y confirma el punto de entrega con el cliente.'
-      : 'Zona roja con todas las transportadoras. Un punto de encuentro casi nunca funciona: lo más seguro es cancelar o pedir adelanto.';
-    var notes = list.filter(function (z) { return z.note; }).map(function (z) { return z.carrier + ': ' + z.note; });
-    return { known: true, list: list, level: level, text: text, notes: notes };
+    var main = out.filter(function (x) { return x.main; });
+    var level = 'verde', advice = '';
+    if (main.length) {
+      var best = main.slice().sort(function (a, b) { return rank[a.status] - rank[b.status]; })[0];
+      var bad = main.filter(function (x) { return x.status === 'rojo'; });
+      level = best.status;
+      if (!bad.length) {
+        var gr = main.filter(function (x) { return x.status === 'verde'; }), ye = main.filter(function (x) { return x.status === 'amarillo'; });
+        advice = !ye.length ? 'Sin zonas peligrosas registradas con ' + main.map(function (x) { return x.carrier; }).join(' ni ') + '.'
+          : (gr.length ? 'Sin zonas registradas con ' + gr.map(function (x) { return x.carrier; }).join(' y ') + '. ' : '') + 'Con ' + ye.map(function (x) { return x.carrier; }).join(' y ') + ' revisa que la dirección no esté en una zona restringida antes de despachar.';
+      }
+      else if (best.status !== 'rojo') advice = 'Con ' + bad.map(function (x) { return x.carrier; }).join(' y ') + ' hay problema. Cambia la transportadora a ' + best.carrier + ' en Dropi.';
+      else {
+        var of = []; bad.forEach(function (x) { x.offices.forEach(function (o) { if (of.indexOf(o) < 0) of.push(o); }); });
+        advice = 'Zona difícil con las dos transportadoras.' + (of.length ? ' Servientrega puede dejarlo en oficina: ' + of.join(' u ') + ' (el cliente retira).' : '') + (main.some(function (x) { return x.meet; }) ? ' Gintracom coordina un punto de encuentro seguro con el cliente.' : '') + ' Si el cliente no puede retirar, mejor cancelar o pedir adelanto.';
+      }
+    }
+    return { level: level, advice: advice, carriers: out };
   }
 
   var api = {
@@ -401,7 +457,7 @@ window.CONFIRMAYA_CONFIG = {
     money: money, summarize: summarize, STATES: STATES,
     PROSPECT_STAGES: PROSPECT_STAGES, PROSPECT_TEMPLATES: PROSPECT_TEMPLATES, isoDay: isoDay, addDays: addDays,
     inBusinessWindow: inBusinessWindow, parseGuayaquil: parseGuayaquil, toGuayaquilInput: toGuayaquilInput, calendarLink: calendarLink, formatMeeting: formatMeeting,
-    normPlace: normPlace, zoneStatus: zoneStatus, parseZones: parseZones, zoneAdvice: zoneAdvice,
+    normPlace: normPlace, parseDangerSheets: parseDangerSheets, dangerAdvice: dangerAdvice,
     suggestProspect: suggestProspect, afterContact: afterContact, nextStage: nextStage, dueToday: dueToday, fillProspect: fillProspect
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -427,7 +483,7 @@ var toastTimer;
 function toast(m){var t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.hidden=true},4000)}
 
 /* ---------- Estado ---------- */
-var S={zones:[],zoneText:'',zoneMsg:'',botMsgs:{},botStatus:null,requests:[],botSim:null,chat:null,prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'pedidos'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
+var S={zones:[],zoneMsg:'',zoneBusy:false,botMsgs:{},botStatus:null,requests:[],botSim:null,chat:null,prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'pedidos'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
 function applyProspect(p,patch){if('stage' in patch)p.stage=patch.stage;if('followups' in patch)p.followups=patch.followups;if('next_follow_up' in patch)p.nextFollowUp=patch.next_follow_up;if('last_contact_at' in patch)p.lastContact=Date.parse(patch.last_contact_at);if('note' in patch)p.note=patch.note;if('meeting_at' in patch)p.meetingAt=patch.meeting_at?Date.parse(patch.meeting_at):null;if('meeting_status' in patch)p.meetingStatus=patch.meeting_status}
 function client(id){return S.clients.find(function(c){return c.id===id})}
 function currentClient(){return S.isAdmin?(S.viewAs?client(S.viewAs):null):S.clients[0]||null}
@@ -480,7 +536,7 @@ function realApi(){
       var cur=S.isAdmin?null:S.clients[0];
       if(S.isAdmin||hasAccess(cur)){
         var o=fail(await sb.from('orders').select('*').order('created_at',{ascending:false}).limit(2000)); S.orders=(o.data||[]).map(dbToOrder);
-        var zz=fail(await sb.from('delivery_zones').select('*').limit(20000)); S.zones=zz.data||[];
+        var zz=fail(await sb.from('danger_zones').select('*').limit(20000)); S.zones=zz.data||[];
         var k=fail(await sb.from('checkouts').select('*').in('status',['abierto','contactado']).order('updated_at',{ascending:false}).limit(500)); S.checkouts=(k.data||[]).map(dbToCheckout);
         if(S.isAdmin){var p=fail(await sb.from('payments').select('*')); S.payments=p.data||[];
           var pr=fail(await sb.from('prospects').select('*').order('created_at',{ascending:false}).limit(1000)); S.prospects=(pr.data||[]).map(dbToProspect);
@@ -496,10 +552,11 @@ function realApi(){
     addOrder:async function(cid,d,phone){fail(await sb.from('orders').insert({client_id:cid,source:'manual',qty:d.qty,product:d.product,total:d.total,name:d.name,phone:phone,province:d.province,city:d.city,address:d.address}))},
     saveSettings:async function(c){fail(await sb.rpc('update_my_settings',{p_advance:c.advance,p_templates:c.templates}))},
     setCheckout:async function(id,status){fail(await sb.from('checkouts').update({status:status}).eq('id',id))},
-    importZones:async function(rows){var seen={},list=[];rows.forEach(function(r){seen[r.place_norm+'|'+r.carrier]=r});Object.keys(seen).forEach(function(k){var r=seen[k];list.push({place:r.place,place_norm:r.place_norm,carrier:r.carrier,status:r.status,note:r.note||null,updated_at:new Date().toISOString()})});
-      for(var i=0;i<list.length;i+=500)fail(await sb.from('delivery_zones').upsert(list.slice(i,i+500),{onConflict:'place_norm,carrier'}));
-      var zz=fail(await sb.from('delivery_zones').select('*').limit(20000));S.zones=zz.data||[];return list.length},
-    clearZones:async function(){fail(await sb.from('delivery_zones').delete().not('id','is',null));S.zones=[]},
+    importZones:async function(rows){
+      fail(await sb.from('danger_zones').delete().not('id','is',null));
+      for(var i=0;i<rows.length;i+=400)fail(await sb.from('danger_zones').insert(rows.slice(i,i+400).map(function(r){return {carrier:r.carrier,province:r.province||null,city:r.city,city_norm:r.city_norm,zone:r.zone||null,sector:r.sector||null,keys:r.keys,kind:r.kind,message:r.message||null,office1:r.office1||null,office2:r.office2||null}})));
+      var zz=fail(await sb.from('danger_zones').select('*').limit(20000));S.zones=zz.data||[];return rows.length},
+    clearZones:async function(){fail(await sb.from('danger_zones').delete().not('id','is',null));S.zones=[]},
     setSubStatus:async function(cid,st){fail(await sb.from('clients').update({sub_status:st}).eq('id',cid))},
     setPrice:async function(cid,price){fail(await sb.from('clients').update({price:price}).eq('id',cid))},
     setPaid:async function(cid,month,paid,amount){fail(await sb.from('payments').upsert({client_id:cid,month:month,paid:paid,amount:amount}))},
@@ -560,10 +617,10 @@ function demoApi(){
     onAuth:function(){},
     login:async function(){}, logout:async function(){},
     load:async function(){S.session={demo:true};S.isAdmin=true;if(d){S.clients=d.clients;S.orders=d.orders;S.checkouts=d.checkouts;S.payments=d.payments;S.prospects=d.prospects||[];S.settings=d.settings||{};d=null}
-      if(!S.zones.length)S.zones=[{place:'Guayaquil',carrier:'Servientrega',status:'rojo',note:'Oficinas cercanas: Alborada y Sauces',place_norm:'guayaquil'},{place:'Guayaquil',carrier:'Gintracom',status:'verde',note:'',place_norm:'guayaquil'},{place:'Cuenca',carrier:'Servientrega',status:'verde',note:'',place_norm:'cuenca'},{place:'Cuenca',carrier:'Gintracom',status:'verde',note:'',place_norm:'cuenca'},{place:'Esmeraldas',carrier:'Servientrega',status:'rojo',note:'',place_norm:'esmeraldas'},{place:'Esmeraldas',carrier:'Gintracom',status:'rojo',note:'',place_norm:'esmeraldas'}]},
+      if(!S.zones.length)S.zones=[{carrier:'SERVIENTREGA',city:'GUAYAQUIL',city_norm:'guayaquil',zone:'CDLA. BASTION POPULAR',sector:'',keys:['bastion popular'],kind:'sin_cobertura',message:'EL SECTOR NO TIENE COBERTURA',office1:'GYE_ALBORADA',office2:'GYE_SAUCES'},{carrier:'GINTRACOM',city:'GUAYAQUIL',city_norm:'guayaquil',zone:'Sector Mapasingue',sector:'',keys:['mapasingue'],kind:'peligrosa',message:'Se coordina punto de encuentro seguro con el cliente.',office1:'',office2:''}]},
     updateOrder:async function(){save()}, addOrder:async function(cid,r,phone){var x=r;S.orders.push({id:uid(),clientId:cid,created:Date.now(),status:'por_confirmar',qty:x.qty,product:x.product,total:x.total,name:x.name,phone:phone,province:x.province,city:x.city,address:x.address,guide:'',number:'',history:{},advanceAsked:false});save()},
     saveSettings:async function(){save()},
-    importZones:async function(rows){rows.forEach(function(r){var i=S.zones.findIndex(function(z){return z.place_norm===r.place_norm&&z.carrier===r.carrier});if(i>-1)S.zones[i]=r;else S.zones.push(r)});return rows.length},
+    importZones:async function(rows){S.zones=rows.slice();return rows.length},
     clearZones:async function(){S.zones=[]},
     setCheckout:async function(){save()}, setSubStatus:async function(){save()}, setPrice:async function(){save()},
     setPaid:async function(cid,month,paid,amount){var p=S.payments.find(function(x){return x.client_id===cid&&x.month===month});if(p){p.paid=paid;p.amount=amount}else S.payments.push({client_id:cid,month:month,paid:paid,amount:amount});save()},
@@ -687,9 +744,9 @@ function orderCard(o,c){
   if(!phoneOk)h+='<div class="err">Falta un teléfono válido para abrir WhatsApp. Corrígelo abajo.</div>';
   if(early&&risk.level==='rojo')h+='<div class="alert rojo"><b>Comprador de alto riesgo.</b> Devuelve muchos pedidos. Pídele que adelante el envío ('+esc(C.money(c.advance))+') antes de despachar.</div>';
   else if(early&&risk.level==='amarillo')h+='<div class="alert amarillo"><b>Riesgo medio.</b> Confirma bien la dirección antes de enviar.</div>';
-  if(early){var za=C.zoneAdvice(S.zones,o.city);
-    if(za&&za.known){h+='<div class="alert '+(za.level==='verde'&&za.text==='Zona segura.'?'info':za.level==='verde'?'amarillo':za.level)+'"><b>🚦 Zona de entrega:</b> '+za.list.map(function(z){return '<span class="badge r-'+z.status+'">'+esc(z.carrier)+'</span>'}).join(' ')+'<br>'+esc(za.text)+(za.notes&&za.notes.length?'<br><span class="mute">'+esc(za.notes.join(' · '))+'</span>':'')+'</div>'}
-    else if(za&&!za.known)h+='<div class="alert info"><b>🚦 Zona de entrega:</b> '+esc(za.text)+'</div>'}
+  if(early&&S.zones.length){var za=C.dangerAdvice(S.zones,o);
+    if(za){h+='<div class="alert '+(za.level==='verde'?'info':za.level)+'"><b>🚦 Zona de entrega:</b> '+za.carriers.map(function(x){return '<span class="badge r-'+x.status+'" title="'+esc(x.text)+'">'+esc(x.carrier.charAt(0)+x.carrier.slice(1).toLowerCase())+'</span>'}).join(' ')
+      +'<br>'+esc(za.advice)+za.carriers.filter(function(x){return x.main&&x.status!=='verde'}).map(function(x){return '<br><span class="mute">'+esc(x.carrier.charAt(0)+x.carrier.slice(1).toLowerCase())+': '+esc(x.text)+'</span>'}).join('')+'</div>'}}
   h+='<div class="actions">';
   if(o.status==='por_confirmar'){
     h+=waBtn('confirmar','💬 Enviar confirmación','p')+waBtn('recordatorio','⏰ Recordatorio')+(risk.level==='rojo'||risk.level==='amarillo'?waBtn('adelanto','💵 Pedir adelanto'):'')
@@ -889,14 +946,15 @@ function renderAdmin(){
   $('#view').innerHTML=h;
 }
 function viewZones(){
-  var by={};S.zones.forEach(function(z){var k=z.carrier;by[k]=by[k]||{verde:0,amarillo:0,rojo:0};by[k][z.status]++});
-  var h='<div class="card"><h2>🚦 Semáforo de zonas de entrega</h2><div class="mute">Pega aquí el archivo de zonas (desde Excel). Una fila por ciudad y transportadora, con estas columnas: <b>Ciudad, Transportadora, Semáforo (verde, amarillo o rojo), Nota</b> (por ejemplo las oficinas cercanas). La primera fila puede ser el encabezado. Si una ciudad ya existe, se actualiza.</div>'
-   +'<textarea id="ztext" rows="8" placeholder="Guayaquil;Servientrega;rojo;Oficinas Alborada y Sauces&#10;Guayaquil;Gintracom;verde;&#10;Cuenca;Servientrega;verde;">'+esc(S.zoneText)+'</textarea>'
-   +'<div class="actions"><button class="b p" data-act="zimport">Cargar zonas</button><button class="b d" data-act="zclear">Borrar todas</button></div>'
+  var by={};S.zones.forEach(function(z){var k=z.carrier;by[k]=(by[k]||0)+1});
+  var cities={};S.zones.forEach(function(z){cities[z.city_norm]=1});
+  var h='<div class="card"><h2>🚦 Zonas peligrosas por transportadora</h2><div class="mute">Sube el Excel mensual de zonas peligrosas (el mismo archivo con las hojas SERVIENTREGA, LAARCOURIER, GINTRACOM y VELOCES). Al cargarlo se reemplazan las zonas anteriores. Cada pedido mostrará su semáforo según la ciudad y la dirección.</div>'
+   +'<div class="actions"><input type="file" id="zfile" accept=".xlsx,.xls" style="max-width:360px"><button class="b p" data-act="zimport"'+(S.zoneBusy?' disabled':'')+'>'+(S.zoneBusy?'Cargando…':'Cargar archivo')+'</button><button class="b d" data-act="zclear">Borrar todas</button></div>'
    +(S.zoneMsg?'<div class="mute" style="margin-top:8px">'+esc(S.zoneMsg)+'</div>':'')+'</div>';
-  h+='<div class="card"><h2>Zonas cargadas: '+S.zones.length+'</h2>'+(Object.keys(by).length?'<table><tr><th>Transportadora</th><th>Verde</th><th>Amarillo</th><th>Rojo</th></tr>'+Object.keys(by).map(function(k){return '<tr><td><b>'+esc(k)+'</b></td><td>'+by[k].verde+'</td><td>'+by[k].amarillo+'</td><td>'+by[k].rojo+'</td></tr>'}).join('')+'</table>':'<div class="mute">Todavía no hay zonas. Cuando las cargues, cada pedido mostrará su semáforo de entrega y qué transportadora conviene.</div>')+'</div>';
+  h+='<div class="card"><h2>Zonas cargadas: '+S.zones.length+'</h2>'+(S.zones.length?'<table><tr><th>Transportadora</th><th>Zonas</th></tr>'+Object.keys(by).map(function(k){return '<tr><td><b>'+esc(k)+'</b></td><td>'+by[k]+'</td></tr>'}).join('')+'</table><div class="mute" style="margin-top:8px">'+Object.keys(cities).length+' ciudades con alguna zona restringida. Una ciudad sin zonas registradas se muestra en verde: es lo que dice el archivo, no una garantía.</div>':'<div class="mute">Todavía no hay zonas cargadas.</div>')+'</div>';
   return h;
 }
+function loadXlsx(){return new Promise(function(res,rej){if(window.XLSX)return res();var sc=document.createElement('script');sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';sc.onload=res;sc.onerror=function(){rej(new Error('No pude cargar el lector de Excel. Revisa tu internet.'))};document.head.appendChild(sc)})}
 function infoBox(label,value){return '<label>'+esc(label)+'</label><input readonly value="'+esc(value)+'" onclick="this.select()">'}
 
 /* ---------- Acciones ---------- */
@@ -911,9 +969,15 @@ document.addEventListener('click',function(e){
     if(t.dataset.scope==='admin'&&t.dataset.tab==='bot'){(async function(){try{S.botStatus=await api.botCall({action:'status'})}catch(e){S.botStatus={claude:false,live:false}}
       var sim=S.prospects.filter(function(x){return x.source==='Simulador'})[0];if(sim)S.botMsgs[sim.id]=await api.loadMessages(sim.id);render()})()}}
   else if(a==='filter'){S.filter=t.dataset.f;render()}
-  else if(a==='zimport'){var txt=$('#ztext').value,pz=C.parseZones(txt);S.zoneText=txt;
-    if(!pz.rows.length){S.zoneMsg='No pude leer ninguna fila. Revisa que tengas Ciudad, Transportadora y Semáforo (verde, amarillo o rojo).';render();return}
-    run(async function(){var n=await api.importZones(pz.rows);S.zoneText='';S.zoneMsg='Listo: '+n+' zonas cargadas.'+(pz.bad.length?' Filas que no pude leer: '+pz.bad.slice(0,15).join(', ')+'.':'')})}
+  else if(a==='zimport'){var fi=$('#zfile'),f=fi&&fi.files&&fi.files[0];
+    if(!f){S.zoneMsg='Primero elige el archivo Excel.';render();return}
+    S.zoneBusy=true;S.zoneMsg='';render();
+    (async function(){try{await loadXlsx();var wb=XLSX.read(await f.arrayBuffer(),{type:'array'}),sheets={};
+      wb.SheetNames.forEach(function(n){sheets[n]=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,defval:null,raw:false})});
+      var pz=C.parseDangerSheets(sheets);
+      if(!pz.rows.length)throw new Error('No encontré zonas. Revisa que sea el archivo con las hojas SERVIENTREGA, LAARCOURIER, GINTRACOM y VELOCES.');
+      var n=await api.importZones(pz.rows);S.zoneMsg='Listo: '+n+' zonas cargadas ('+Object.keys(pz.counts).map(function(k){return k+' '+pz.counts[k]}).join(', ')+').'}
+      catch(e){S.zoneMsg=e.message||'No pude leer el archivo.'}finally{S.zoneBusy=false;render()}})()}
   else if(a==='zclear'){if(!confirm('¿Borrar todas las zonas cargadas?'))return;run(async function(){await api.clearZones();S.zoneMsg='Zonas borradas.'})}
   else if(a==='logout'){run(async function(){await api.logout();S.session=null;S.isAdmin=false;S.viewAs=null})}
   else if(a==='login'){run(async function(){var em=$('#em').value.trim(),pw=$('#pw').value;if(!em||!pw)throw new Error('Escribe tu correo y contraseña');await api.login(em,pw);await api.load()})}
