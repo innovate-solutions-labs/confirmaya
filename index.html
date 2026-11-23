@@ -344,6 +344,56 @@ window.CONFIRMAYA_CONFIG = {
     } catch (e) { return String(date); }
   }
 
+  /* ---------- Semáforo de zonas de entrega por transportadora ---------- */
+  function normPlace(t) {
+    return String(t == null ? '' : t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function zoneStatus(t) {
+    var x = normPlace(t);
+    if (!x) return '';
+    if (/^(verde|green|ok|si|normal|segura|seguro|cobertura|entrega)/.test(x)) return 'verde';
+    if (/^(amarill|yellow|medio|media|riesgo medio|restring|parcial|oficina)/.test(x)) return 'amarillo';
+    if (/^(rojo|red|no|peligros|alto|sin cobertura|no entrega|restringid)/.test(x)) return 'rojo';
+    return '';
+  }
+  // Texto pegado desde Excel/CSV: lugar, transportadora, semáforo, nota (con o sin encabezado; separa por tab, ; o ,)
+  function parseZones(text) {
+    var lines = String(text || '').split(/\r?\n/).filter(function (l) { return l.trim(); });
+    var out = [], bad = [];
+    lines.forEach(function (line, i) {
+      var sep = line.indexOf('\t') > -1 ? '\t' : line.indexOf(';') > -1 ? ';' : ',';
+      var c = line.split(sep).map(function (x) { return x.trim().replace(/^"|"$/g, ''); });
+      var st = zoneStatus(c[2]);
+      if (i === 0 && !st) return; // encabezado
+      if (!c[0] || !c[1] || !st) { bad.push(i + 1); return; }
+      out.push({ place: c[0], place_norm: normPlace(c[0]), carrier: c[1], status: st, note: c.slice(3).join(' ').trim() });
+    });
+    return { rows: out, bad: bad };
+  }
+  // zones = filas de delivery_zones; devuelve las transportadoras de esa ciudad y un consejo
+  function zoneAdvice(zones, city) {
+    var key = normPlace(city);
+    if (!key || !zones || !zones.length) return null;
+    var list = zones.filter(function (z) { return z.place_norm === key; });
+    if (!list.length) list = zones.filter(function (z) { return z.place_norm.indexOf(key) > -1 || key.indexOf(z.place_norm) > -1; });
+    if (!list.length) return { known: false, list: [], level: 'sin', text: 'Sin información de esta zona: confirma con el cliente que tu transportadora llega.' };
+    var rank = { verde: 0, amarillo: 1, rojo: 2 };
+    var best = list.slice().sort(function (a, b) { return rank[a.status] - rank[b.status]; })[0];
+    var green = list.filter(function (z) { return z.status === 'verde'; });
+    var bad = list.filter(function (z) { return z.status === 'rojo'; });
+    var level = best.status, text = '';
+    if (best.status === 'verde' && !bad.length) text = 'Zona segura.';
+    else if (green.length) text = bad.length
+      ? 'Zona de riesgo con ' + bad.map(function (z) { return z.carrier; }).join(' y ') + '. Cambia la transportadora a ' + green.map(function (z) { return z.carrier; }).join(' o ') + ' en Dropi.'
+      : 'Zona con precaución en alguna transportadora; ' + green[0].carrier + ' llega bien.';
+    else text = best.status === 'amarillo'
+      ? 'Zona con restricciones. Revisa las oficinas cercanas y confirma el punto de entrega con el cliente.'
+      : 'Zona roja con todas las transportadoras. Un punto de encuentro casi nunca funciona: lo más seguro es cancelar o pedir adelanto.';
+    var notes = list.filter(function (z) { return z.note; }).map(function (z) { return z.carrier + ': ' + z.note; });
+    return { known: true, list: list, level: level, text: text, notes: notes };
+  }
+
   var api = {
     parseOrderMessage: parseOrderMessage, parseMoney: parseMoney, fromShopifyOrder: fromShopifyOrder,
     normalizePhone: normalizePhone, validEcPhone: validEcPhone, waLink: waLink,
@@ -351,6 +401,7 @@ window.CONFIRMAYA_CONFIG = {
     money: money, summarize: summarize, STATES: STATES,
     PROSPECT_STAGES: PROSPECT_STAGES, PROSPECT_TEMPLATES: PROSPECT_TEMPLATES, isoDay: isoDay, addDays: addDays,
     inBusinessWindow: inBusinessWindow, parseGuayaquil: parseGuayaquil, toGuayaquilInput: toGuayaquilInput, calendarLink: calendarLink, formatMeeting: formatMeeting,
+    normPlace: normPlace, zoneStatus: zoneStatus, parseZones: parseZones, zoneAdvice: zoneAdvice,
     suggestProspect: suggestProspect, afterContact: afterContact, nextStage: nextStage, dueToday: dueToday, fillProspect: fillProspect
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -376,7 +427,7 @@ var toastTimer;
 function toast(m){var t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.hidden=true},4000)}
 
 /* ---------- Estado ---------- */
-var S={botMsgs:{},botStatus:null,requests:[],botSim:null,chat:null,prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'pedidos'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
+var S={zones:[],zoneText:'',zoneMsg:'',botMsgs:{},botStatus:null,requests:[],botSim:null,chat:null,prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'pedidos'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
 function applyProspect(p,patch){if('stage' in patch)p.stage=patch.stage;if('followups' in patch)p.followups=patch.followups;if('next_follow_up' in patch)p.nextFollowUp=patch.next_follow_up;if('last_contact_at' in patch)p.lastContact=Date.parse(patch.last_contact_at);if('note' in patch)p.note=patch.note;if('meeting_at' in patch)p.meetingAt=patch.meeting_at?Date.parse(patch.meeting_at):null;if('meeting_status' in patch)p.meetingStatus=patch.meeting_status}
 function client(id){return S.clients.find(function(c){return c.id===id})}
 function currentClient(){return S.isAdmin?(S.viewAs?client(S.viewAs):null):S.clients[0]||null}
@@ -429,12 +480,13 @@ function realApi(){
       var cur=S.isAdmin?null:S.clients[0];
       if(S.isAdmin||hasAccess(cur)){
         var o=fail(await sb.from('orders').select('*').order('created_at',{ascending:false}).limit(2000)); S.orders=(o.data||[]).map(dbToOrder);
+        var zz=fail(await sb.from('delivery_zones').select('*').limit(20000)); S.zones=zz.data||[];
         var k=fail(await sb.from('checkouts').select('*').in('status',['abierto','contactado']).order('updated_at',{ascending:false}).limit(500)); S.checkouts=(k.data||[]).map(dbToCheckout);
         if(S.isAdmin){var p=fail(await sb.from('payments').select('*')); S.payments=p.data||[];
           var pr=fail(await sb.from('prospects').select('*').order('created_at',{ascending:false}).limit(1000)); S.prospects=(pr.data||[]).map(dbToProspect);
           var st=fail(await sb.from('admin_settings').select('data').eq('id',1).maybeSingle()); S.settings=(st.data&&st.data.data)||{};
           var mr=fail(await sb.from('meeting_requests').select('*').in('status',['pendiente','contraoferta']).order('created_at',{ascending:false}).limit(100)); S.requests=(mr.data||[]).map(function(x){return {id:x.id,prospectId:x.prospect_id,text:x.requested_text||'',at:Date.parse(x.proposed_at),status:x.status}})}
-      }else{S.orders=[];S.checkouts=[]}
+      }else{S.orders=[];S.checkouts=[];S.zones=[]}
     },
     updateOrder:async function(id,patch){var m={};
       if('status' in patch)m.status=patch.status; if('guide' in patch)m.guide=patch.guide; if('phone' in patch)m.phone=patch.phone;
@@ -444,6 +496,10 @@ function realApi(){
     addOrder:async function(cid,d,phone){fail(await sb.from('orders').insert({client_id:cid,source:'manual',qty:d.qty,product:d.product,total:d.total,name:d.name,phone:phone,province:d.province,city:d.city,address:d.address}))},
     saveSettings:async function(c){fail(await sb.rpc('update_my_settings',{p_advance:c.advance,p_templates:c.templates}))},
     setCheckout:async function(id,status){fail(await sb.from('checkouts').update({status:status}).eq('id',id))},
+    importZones:async function(rows){var seen={},list=[];rows.forEach(function(r){seen[r.place_norm+'|'+r.carrier]=r});Object.keys(seen).forEach(function(k){var r=seen[k];list.push({place:r.place,place_norm:r.place_norm,carrier:r.carrier,status:r.status,note:r.note||null,updated_at:new Date().toISOString()})});
+      for(var i=0;i<list.length;i+=500)fail(await sb.from('delivery_zones').upsert(list.slice(i,i+500),{onConflict:'place_norm,carrier'}));
+      var zz=fail(await sb.from('delivery_zones').select('*').limit(20000));S.zones=zz.data||[];return list.length},
+    clearZones:async function(){fail(await sb.from('delivery_zones').delete().not('id','is',null));S.zones=[]},
     setSubStatus:async function(cid,st){fail(await sb.from('clients').update({sub_status:st}).eq('id',cid))},
     setPrice:async function(cid,price){fail(await sb.from('clients').update({price:price}).eq('id',cid))},
     setPaid:async function(cid,month,paid,amount){fail(await sb.from('payments').upsert({client_id:cid,month:month,paid:paid,amount:amount}))},
@@ -503,9 +559,13 @@ function demoApi(){
     demo:true,
     onAuth:function(){},
     login:async function(){}, logout:async function(){},
-    load:async function(){S.session={demo:true};S.isAdmin=true;if(d){S.clients=d.clients;S.orders=d.orders;S.checkouts=d.checkouts;S.payments=d.payments;S.prospects=d.prospects||[];S.settings=d.settings||{};d=null}},
+    load:async function(){S.session={demo:true};S.isAdmin=true;if(d){S.clients=d.clients;S.orders=d.orders;S.checkouts=d.checkouts;S.payments=d.payments;S.prospects=d.prospects||[];S.settings=d.settings||{};d=null}
+      if(!S.zones.length)S.zones=[{place:'Guayaquil',carrier:'Servientrega',status:'rojo',note:'Oficinas cercanas: Alborada y Sauces',place_norm:'guayaquil'},{place:'Guayaquil',carrier:'Gintracom',status:'verde',note:'',place_norm:'guayaquil'},{place:'Cuenca',carrier:'Servientrega',status:'verde',note:'',place_norm:'cuenca'},{place:'Cuenca',carrier:'Gintracom',status:'verde',note:'',place_norm:'cuenca'},{place:'Esmeraldas',carrier:'Servientrega',status:'rojo',note:'',place_norm:'esmeraldas'},{place:'Esmeraldas',carrier:'Gintracom',status:'rojo',note:'',place_norm:'esmeraldas'}]},
     updateOrder:async function(){save()}, addOrder:async function(cid,r,phone){var x=r;S.orders.push({id:uid(),clientId:cid,created:Date.now(),status:'por_confirmar',qty:x.qty,product:x.product,total:x.total,name:x.name,phone:phone,province:x.province,city:x.city,address:x.address,guide:'',number:'',history:{},advanceAsked:false});save()},
-    saveSettings:async function(){save()}, setCheckout:async function(){save()}, setSubStatus:async function(){save()}, setPrice:async function(){save()},
+    saveSettings:async function(){save()},
+    importZones:async function(rows){rows.forEach(function(r){var i=S.zones.findIndex(function(z){return z.place_norm===r.place_norm&&z.carrier===r.carrier});if(i>-1)S.zones[i]=r;else S.zones.push(r)});return rows.length},
+    clearZones:async function(){S.zones=[]},
+    setCheckout:async function(){save()}, setSubStatus:async function(){save()}, setPrice:async function(){save()},
     setPaid:async function(cid,month,paid,amount){var p=S.payments.find(function(x){return x.client_id===cid&&x.month===month});if(p){p.paid=paid;p.amount=amount}else S.payments.push({client_id:cid,month:month,paid:paid,amount:amount});save()},
     admin:async function(b){
       if(b.action==='create'){var c={id:uid(),name:b.name,store:b.store,phone:'',email:b.email,price:b.price,advance:8,templates:{},subStatus:b.status};S.clients.push(c);save();return {client_id:c.id,link:'https://ejemplo.test/#recovery-demo',webhook_url:'https://ejemplo.test/functions/v1/shopify-webhook?t=demo'}}
@@ -627,6 +687,9 @@ function orderCard(o,c){
   if(!phoneOk)h+='<div class="err">Falta un teléfono válido para abrir WhatsApp. Corrígelo abajo.</div>';
   if(early&&risk.level==='rojo')h+='<div class="alert rojo"><b>Comprador de alto riesgo.</b> Devuelve muchos pedidos. Pídele que adelante el envío ('+esc(C.money(c.advance))+') antes de despachar.</div>';
   else if(early&&risk.level==='amarillo')h+='<div class="alert amarillo"><b>Riesgo medio.</b> Confirma bien la dirección antes de enviar.</div>';
+  if(early){var za=C.zoneAdvice(S.zones,o.city);
+    if(za&&za.known){h+='<div class="alert '+(za.level==='verde'&&za.text==='Zona segura.'?'info':za.level==='verde'?'amarillo':za.level)+'"><b>🚦 Zona de entrega:</b> '+za.list.map(function(z){return '<span class="badge r-'+z.status+'">'+esc(z.carrier)+'</span>'}).join(' ')+'<br>'+esc(za.text)+(za.notes&&za.notes.length?'<br><span class="mute">'+esc(za.notes.join(' · '))+'</span>':'')+'</div>'}
+    else if(za&&!za.known)h+='<div class="alert info"><b>🚦 Zona de entrega:</b> '+esc(za.text)+'</div>'}
   h+='<div class="actions">';
   if(o.status==='por_confirmar'){
     h+=waBtn('confirmar','💬 Enviar confirmación','p')+waBtn('recordatorio','⏰ Recordatorio')+(risk.level==='rojo'||risk.level==='amarillo'?waBtn('adelanto','💵 Pedir adelanto'):'')
@@ -790,7 +853,7 @@ function renderAdmin(){
   var tab=S.tab.admin;
   var nDue=S.prospects.filter(function(x){return C.dueToday(x,C.isoDay(new Date()))}).length;
   var nReq=S.requests.length+S.prospects.filter(function(x){return x.needsAttention}).length;
-  nav([['prospectos','Prospectos'+(nDue?' ('+nDue+')':'')],['bot','🤖 Bot'+(nReq?' ('+nReq+')':'')],['resumen','Resumen'],['clientes','Clientes y cobros'],['nuevo','Agregar cliente']],tab,'admin');
+  nav([['prospectos','Prospectos'+(nDue?' ('+nDue+')':'')],['bot','🤖 Bot'+(nReq?' ('+nReq+')':'')],['zonas','🚦 Zonas'],['resumen','Resumen'],['clientes','Clientes y cobros'],['nuevo','Agregar cliente']],tab,'admin');
   var rows=S.clients.map(function(c){
     var s=C.summarize(ordersOf(c.id).map(function(o){return Object.assign({},o,{history:historyFor(o)})}));
     return {c:c,s:s,pend:ordersOf(c.id).filter(function(o){return o.status==='por_confirmar'}).length};
@@ -798,6 +861,7 @@ function renderAdmin(){
   var h='';
   if(tab==='prospectos'){h=viewProspects()}
   else if(tab==='bot'){h=viewBot()}
+  else if(tab==='zonas'){h=viewZones()}
   else if(tab==='resumen'){
     var activos=rows.filter(function(r){return r.c.subStatus==='active'}).length;
     var mrr=rows.filter(function(r){return r.c.subStatus==='active'}).reduce(function(a,r){return a+r.c.price},0);
@@ -824,6 +888,15 @@ function renderAdmin(){
   }
   $('#view').innerHTML=h;
 }
+function viewZones(){
+  var by={};S.zones.forEach(function(z){var k=z.carrier;by[k]=by[k]||{verde:0,amarillo:0,rojo:0};by[k][z.status]++});
+  var h='<div class="card"><h2>🚦 Semáforo de zonas de entrega</h2><div class="mute">Pega aquí el archivo de zonas (desde Excel). Una fila por ciudad y transportadora, con estas columnas: <b>Ciudad, Transportadora, Semáforo (verde, amarillo o rojo), Nota</b> (por ejemplo las oficinas cercanas). La primera fila puede ser el encabezado. Si una ciudad ya existe, se actualiza.</div>'
+   +'<textarea id="ztext" rows="8" placeholder="Guayaquil;Servientrega;rojo;Oficinas Alborada y Sauces&#10;Guayaquil;Gintracom;verde;&#10;Cuenca;Servientrega;verde;">'+esc(S.zoneText)+'</textarea>'
+   +'<div class="actions"><button class="b p" data-act="zimport">Cargar zonas</button><button class="b d" data-act="zclear">Borrar todas</button></div>'
+   +(S.zoneMsg?'<div class="mute" style="margin-top:8px">'+esc(S.zoneMsg)+'</div>':'')+'</div>';
+  h+='<div class="card"><h2>Zonas cargadas: '+S.zones.length+'</h2>'+(Object.keys(by).length?'<table><tr><th>Transportadora</th><th>Verde</th><th>Amarillo</th><th>Rojo</th></tr>'+Object.keys(by).map(function(k){return '<tr><td><b>'+esc(k)+'</b></td><td>'+by[k].verde+'</td><td>'+by[k].amarillo+'</td><td>'+by[k].rojo+'</td></tr>'}).join('')+'</table>':'<div class="mute">Todavía no hay zonas. Cuando las cargues, cada pedido mostrará su semáforo de entrega y qué transportadora conviene.</div>')+'</div>';
+  return h;
+}
 function infoBox(label,value){return '<label>'+esc(label)+'</label><input readonly value="'+esc(value)+'" onclick="this.select()">'}
 
 /* ---------- Acciones ---------- */
@@ -838,6 +911,10 @@ document.addEventListener('click',function(e){
     if(t.dataset.scope==='admin'&&t.dataset.tab==='bot'){(async function(){try{S.botStatus=await api.botCall({action:'status'})}catch(e){S.botStatus={claude:false,live:false}}
       var sim=S.prospects.filter(function(x){return x.source==='Simulador'})[0];if(sim)S.botMsgs[sim.id]=await api.loadMessages(sim.id);render()})()}}
   else if(a==='filter'){S.filter=t.dataset.f;render()}
+  else if(a==='zimport'){var txt=$('#ztext').value,pz=C.parseZones(txt);S.zoneText=txt;
+    if(!pz.rows.length){S.zoneMsg='No pude leer ninguna fila. Revisa que tengas Ciudad, Transportadora y Semáforo (verde, amarillo o rojo).';render();return}
+    run(async function(){var n=await api.importZones(pz.rows);S.zoneText='';S.zoneMsg='Listo: '+n+' zonas cargadas.'+(pz.bad.length?' Filas que no pude leer: '+pz.bad.slice(0,15).join(', ')+'.':'')})}
+  else if(a==='zclear'){if(!confirm('¿Borrar todas las zonas cargadas?'))return;run(async function(){await api.clearZones();S.zoneMsg='Zonas borradas.'})}
   else if(a==='logout'){run(async function(){await api.logout();S.session=null;S.isAdmin=false;S.viewAs=null})}
   else if(a==='login'){run(async function(){var em=$('#em').value.trim(),pw=$('#pw').value;if(!em||!pw)throw new Error('Escribe tu correo y contraseña');await api.login(em,pw);await api.load()})}
   else if(a==='setpw'){var p1=$('#pw1').value,p2=$('#pw2').value;
