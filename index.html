@@ -376,7 +376,7 @@ var toastTimer;
 function toast(m){var t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.hidden=true},4000)}
 
 /* ---------- Estado ---------- */
-var S={chat:null,prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'pedidos'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
+var S={botMsgs:{},botStatus:null,requests:[],botSim:null,chat:null,prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'pedidos'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
 function applyProspect(p,patch){if('stage' in patch)p.stage=patch.stage;if('followups' in patch)p.followups=patch.followups;if('next_follow_up' in patch)p.nextFollowUp=patch.next_follow_up;if('last_contact_at' in patch)p.lastContact=Date.parse(patch.last_contact_at);if('note' in patch)p.note=patch.note;if('meeting_at' in patch)p.meetingAt=patch.meeting_at?Date.parse(patch.meeting_at):null;if('meeting_status' in patch)p.meetingStatus=patch.meeting_status}
 function client(id){return S.clients.find(function(c){return c.id===id})}
 function currentClient(){return S.isAdmin?(S.viewAs?client(S.viewAs):null):S.clients[0]||null}
@@ -402,7 +402,7 @@ function historyFor(o){
 var api;
 function dbToClient(r){return {id:r.id,name:r.name,store:r.store,phone:r.phone||'',email:r.email||'',price:Number(r.price)||0,advance:Number(r.advance),templates:r.templates||{},subStatus:r.sub_status,periodEnd:r.current_period_end,userId:r.user_id}}
 function dbToOrder(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.created_at),status:r.status,qty:r.qty,product:r.product,total:Number(r.total),name:r.name,phone:r.phone||'',province:r.province||'',city:r.city||'',address:r.address||'',guide:r.guide||'',number:r.number||'',history:{delivered:r.hist_delivered,returned:r.hist_returned},advanceAsked:!!r.advance_asked}}
-function dbToProspect(r){return {id:r.id,name:r.name,phone:r.phone,source:r.source,stage:r.stage,note:r.note||'',followups:r.followups||0,nextFollowUp:r.next_follow_up||null,lastContact:r.last_contact_at?Date.parse(r.last_contact_at):null,created:Date.parse(r.created_at),meetingAt:r.meeting_at?Date.parse(r.meeting_at):null,meetingStatus:r.meeting_status||null}}
+function dbToProspect(r){return {id:r.id,name:r.name,phone:r.phone,source:r.source,stage:r.stage,note:r.note||'',followups:r.followups||0,nextFollowUp:r.next_follow_up||null,lastContact:r.last_contact_at?Date.parse(r.last_contact_at):null,created:Date.parse(r.created_at),meetingAt:r.meeting_at?Date.parse(r.meeting_at):null,meetingStatus:r.meeting_status||null,botMode:r.bot_mode||'auto',needsAttention:!!r.needs_attention,attentionReason:r.attention_reason||'',phoneNorm:r.phone_norm||''}}
 function dbToCheckout(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.updated_at||r.created_at),name:r.name||'',phone:r.phone||'',product:r.product||'',total:Number(r.total)||0,recoverUrl:r.recover_url||'',status:r.status}}
 
 function realApi(){
@@ -432,7 +432,8 @@ function realApi(){
         var k=fail(await sb.from('checkouts').select('*').in('status',['abierto','contactado']).order('updated_at',{ascending:false}).limit(500)); S.checkouts=(k.data||[]).map(dbToCheckout);
         if(S.isAdmin){var p=fail(await sb.from('payments').select('*')); S.payments=p.data||[];
           var pr=fail(await sb.from('prospects').select('*').order('created_at',{ascending:false}).limit(1000)); S.prospects=(pr.data||[]).map(dbToProspect);
-          var st=fail(await sb.from('admin_settings').select('data').eq('id',1).maybeSingle()); S.settings=(st.data&&st.data.data)||{}}
+          var st=fail(await sb.from('admin_settings').select('data').eq('id',1).maybeSingle()); S.settings=(st.data&&st.data.data)||{};
+          var mr=fail(await sb.from('meeting_requests').select('*').in('status',['pendiente','contraoferta']).order('created_at',{ascending:false}).limit(100)); S.requests=(mr.data||[]).map(function(x){return {id:x.id,prospectId:x.prospect_id,text:x.requested_text||'',at:Date.parse(x.proposed_at),status:x.status}})}
       }else{S.orders=[];S.checkouts=[]}
     },
     updateOrder:async function(id,patch){var m={};
@@ -450,7 +451,17 @@ function realApi(){
     updateProspect:async function(id,patch){var m=Object.assign({},patch,{updated_at:new Date().toISOString()});fail(await sb.from('prospects').update(m).eq('id',id))},
     deleteProspect:async function(id){fail(await sb.from('prospects').delete().eq('id',id))},
     saveAdminSettings:async function(){fail(await sb.from('admin_settings').update({data:S.settings}).eq('id',1))},
-    loadMessages:async function(pid){var r=fail(await sb.from('prospect_messages').select('*').eq('prospect_id',pid).order('created_at',{ascending:true}).limit(60));return (r.data||[]).map(function(m){return {dir:m.direction,body:m.body,at:Date.parse(m.created_at)}})},
+    botCall:async function(body){
+      var s=(await sb.auth.getSession()).data.session;
+      var r=await fetch(CFG.url+'/functions/v1/whatsapp-bot',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+s.access_token,'apikey':CFG.key},body:JSON.stringify(body)});
+      var j=await r.json().catch(function(){return {}});
+      if(!r.ok){var e=new Error(j.error||('Error '+r.status));e.code=j.error;throw e}
+      return j;
+    },
+    setBotMode:async function(id,mode){fail(await sb.from('prospects').update({bot_mode:mode,updated_at:new Date().toISOString()}).eq('id',id))},
+    clearAttention:async function(id){fail(await sb.from('prospects').update({needs_attention:false,attention_reason:null}).eq('id',id))},
+    createTestProspect:async function(){var n=String(Date.now()).slice(-7);fail(await sb.from('prospects').insert({name:'Prueba del bot',phone:'099'+n,source:'Simulador'}))},
+    loadMessages:async function(pid){var r=fail(await sb.from('prospect_messages').select('*').eq('prospect_id',pid).order('created_at',{ascending:true}).limit(60));return (r.data||[]).map(function(m){return {dir:m.direction,body:m.body,at:Date.parse(m.created_at),bot:!!m.by_bot}})},
     addMessage:async function(pid,dir,body){fail(await sb.from('prospect_messages').insert({prospect_id:pid,direction:dir,body:body}))},
     saveMeeting:async function(id,iso,status){fail(await sb.from('prospects').update({meeting_at:iso,meeting_status:status,updated_at:new Date().toISOString()}).eq('id',id))},
     assistant:async function(pid,text){
@@ -504,6 +515,23 @@ function demoApi(){
     },
     addProspect:async function(d){S.prospects.unshift({id:uid(),name:d.name,phone:d.phone,source:'Anuncio Meta',stage:'nuevo',note:d.note||'',followups:0,nextFollowUp:C.isoDay(new Date()),lastContact:null,created:Date.now()});save()},
     updateProspect:async function(){save()}, deleteProspect:async function(id){S.prospects=S.prospects.filter(function(x){return x.id!==id});save()}, saveAdminSettings:async function(){save()},
+    botCall:async function(b){
+      if(b.action==='status')return {claude:false,live:false};
+      if(b.action==='simulate'){S.demoMsgs=S.demoMsgs||{};var L=(S.demoMsgs[b.prospect_id]=S.demoMsgs[b.prospect_id]||[]);L.push({dir:'in',body:b.text,at:Date.now(),bot:false});
+        var t=b.text,pr=S.prospects.find(function(x){return x.id===b.prospect_id});var reply;
+        if(/lunes|martes|mi[eé]rcoles|jueves|viernes|\d\s*(pm|de la tarde)|\d{1,2}:\d{2}/i.test(t)){var d=new Date(Date.now()+2*86400000);d.setHours(16,0,0,0);var iso=C.toGuayaquilInput(d);S.requests.push({id:uid(),prospectId:b.prospect_id,text:t,at:C.parseGuayaquil(iso).getTime(),status:'pendiente'});if(pr){pr.needsAttention=true;pr.attentionReason='Pidió reunión'}reply='Anotado: '+C.formatMeeting(C.parseGuayaquil(iso))+' (hora de Ecuador). Déjame confirmar mi agenda y te confirmo en unos minutos 🙌'}
+        else if(/si|sí|dale|ok/i.test(t)&&S.requests.some(function(x){return x.prospectId===b.prospect_id&&x.status==='contraoferta'})){var rq=S.requests.find(function(x){return x.prospectId===b.prospect_id&&x.status==='contraoferta'});rq.status='confirmada';S.requests=S.requests.filter(function(x){return x!==rq});if(pr){pr.meetingAt=rq.at;pr.meetingStatus='confirmada';pr.stage='reunion'}reply='Perfecto ✅ Quedamos el '+C.formatMeeting(new Date(rq.at))+' (hora de Ecuador).'}
+        else reply='(demo) Qué buena idea. Cuéntame un poco más: ¿qué te gustaría vender?';
+        L.push({dir:'out',body:reply,at:Date.now(),bot:true});save();return {reply:reply,sent:false,note:'simulado'}}
+      if(b.action==='decide'){var r2=S.requests.find(function(x){return x.id===b.request_id});var p2=S.prospects.find(function(x){return x.id===r2.prospectId});S.demoMsgs=S.demoMsgs||{};var L2=(S.demoMsgs[r2.prospectId]=S.demoMsgs[r2.prospectId]||[]);var m;
+        if(b.decision==='confirmar'){m='Confirmado ✅ Quedamos el '+C.formatMeeting(new Date(r2.at))+' (hora de Ecuador).';r2.status='confirmada';S.requests=S.requests.filter(function(x){return x!==r2});p2.meetingAt=r2.at;p2.meetingStatus='confirmada';p2.stage='reunion'}
+        else if(b.decision==='cambiar'){var dt=C.parseGuayaquil(b.new_at);if(!dt||!C.inBusinessWindow(dt,20)){var e=new Error('horario_fuera_de_ventana');e.code='horario_fuera_de_ventana';throw e}r2.at=dt.getTime();r2.status='contraoferta';m='A esa hora no me calza, pero puedo el '+C.formatMeeting(dt)+'. ¿Te sirve?'}
+        else{r2.status='rechazada';S.requests=S.requests.filter(function(x){return x!==r2});m='A esa hora no me es posible. ¿Qué otro día y hora te acomoda?'}
+        p2.needsAttention=false;L2.push({dir:'out',body:m,at:Date.now(),bot:true});save();return {message:m,sent:false,note:'simulado'}}
+      return {};
+    },
+    setBotMode:async function(){save()}, clearAttention:async function(){save()},
+    createTestProspect:async function(){S.prospects.unshift({id:uid(),name:'Prueba del bot',phone:'0990000'+String(Date.now()).slice(-3),source:'Simulador',stage:'nuevo',note:'',followups:0,nextFollowUp:null,lastContact:null,created:Date.now(),meetingAt:null,meetingStatus:null,botMode:'auto',needsAttention:false,attentionReason:''});save()},
     loadMessages:async function(pid){return (S.demoMsgs&&S.demoMsgs[pid])||[]},
     addMessage:async function(pid,dir,body){S.demoMsgs=S.demoMsgs||{};(S.demoMsgs[pid]=S.demoMsgs[pid]||[]).push({dir:dir,body:body,at:Date.now()})},
     saveMeeting:async function(){save()},
@@ -663,7 +691,7 @@ function stageLabel(st){var f=C.PROSPECT_STAGES.find(function(x){return x[0]===s
 function prospectLink(p,k){return C.validEcPhone(p.phone)?C.waLink(p.phone,C.fillProspect(ptplOf(k),p,S.settings)):'#'}
 function prospectCard(p,today){
   var sug=C.suggestProspect(p), due=C.dueToday(p,today), days=Math.floor((Date.now()-p.created)/86400000), ok=C.validEcPhone(p.phone);
-  var h='<div class="card"><div class="row"><div class="grow"><b>'+esc(p.name)+'</b><div class="mute">'+esc(p.phone)+' · llegó hace '+days+' día(s)'+(p.nextFollowUp?' · seguimiento '+(due?'<b>hoy</b>':esc(p.nextFollowUp)):'')+'</div></div>'
+  var h='<div class="card"><div class="row"><div class="grow"><b>'+esc(p.name)+'</b> '+(p.needsAttention?'<span class="badge r-rojo">necesita tu atención</span>':'')+'<div class="mute">'+esc(p.phone)+' · llegó hace '+days+' día(s)'+(p.nextFollowUp?' · seguimiento '+(due?'<b>hoy</b>':esc(p.nextFollowUp)):'')+'</div></div>'
    +'<span class="badge s-'+(p.stage==='perdido'?'cancelado':p.stage==='cerrado'?'entregado':p.stage==='nuevo'?'por_confirmar':'confirmado')+'">'+esc(stageLabel(p.stage))+'</span></div>';
   if(!ok)h+='<div class="err">Teléfono no válido: corrígelo para abrir WhatsApp.</div>';
   if(sug==='bienvenida'&&!S.settings.video)h+='<div class="mute" style="margin-top:6px">Después de enviar este mensaje, adjunta tu video en el chat.</div>';
@@ -722,17 +750,48 @@ function viewProspects(){
   if(done.length)h+='<details style="margin-top:14px"><summary class="mute">Cerrados y perdidos ('+done.length+')</summary>'+done.map(function(p){return prospectCard(p,today)}).join('')+'</details>';
   return h;
 }
+function botBadge(p){return p.botMode==='pausado'?'<span class="badge s-cancelado">Bot pausado</span>':'<span class="badge s-entregado">Bot activo</span>'}
+function viewBot(){
+  var st=S.botStatus,h='<div class="card"><h2>🤖 Bot de WhatsApp</h2><div class="mute">Responde solo a los prospectos que llegan de tus anuncios. Te consulta únicamente para confirmar reuniones.</div>'
+   +'<div class="actions"><span class="badge '+(st&&st.claude?'s-entregado':'s-cancelado')+'">Claude: '+(st?(st.claude?'conectado':'falta la clave'):'revisando…')+'</span>'
+   +'<span class="badge '+(st&&st.live?'s-entregado':'s-por_confirmar')+'">WhatsApp: '+(st?(st.live?'conectado':'en modo simulado'):'revisando…')+'</span></div>'
+   +(st&&!st.live?'<div class="alert amarillo" style="margin-top:8px">El bot todavía <b>no está conectado a tu WhatsApp</b>: aquí solo puedes probarlo con el simulador. Mira la guía de conexión para que conteste de verdad.</div>':'')+'</div>';
+  var pend=S.requests.filter(function(r){return r.status==='pendiente'}),counter=S.requests.filter(function(r){return r.status==='contraoferta'});
+  h+='<h2 style="margin:14px 0 8px">Reuniones por confirmar ('+pend.length+')</h2>';
+  if(!pend.length)h+='<div class="card mute">Ninguna por ahora. Cuando alguien proponga un horario, te aviso aquí (y por correo).</div>';
+  h+=pend.map(function(r){var p=S.prospects.find(function(x){return x.id===r.prospectId})||{name:'(prospecto)',phone:''},ok=C.inBusinessWindow(new Date(r.at),20);
+    return '<div class="card"><div class="row"><div class="grow"><b>'+esc(p.name)+'</b><div class="mute">Pidió: «'+esc(r.text||'')+'»</div><div>Horario propuesto: <b>'+esc(C.formatMeeting(new Date(r.at)))+'</b> '+(ok?'':'<span class="badge r-amarillo">fuera de 9 a 19</span>')+'</div></div></div>'
+     +'<div class="actions"><button class="b g" data-act="rqok" data-id="'+esc(r.id)+'">✅ Confirmar ese horario</button><button class="b d" data-act="rqno" data-id="'+esc(r.id)+'">No puedo</button></div>'
+     +'<div class="row" style="margin-top:8px"><input type="datetime-local" id="rq_new_'+esc(r.id)+'" style="max-width:240px"><button class="b" data-act="rqchg" data-id="'+esc(r.id)+'">Proponer otra hora</button></div></div>'}).join('');
+  if(counter.length)h+='<h2 style="margin:14px 0 8px">Esperando respuesta del prospecto ('+counter.length+')</h2>'+counter.map(function(r){var p=S.prospects.find(function(x){return x.id===r.prospectId})||{name:'(prospecto)'};return '<div class="card"><b>'+esc(p.name)+'</b> · le propusiste <b>'+esc(C.formatMeeting(new Date(r.at)))+'</b><div class="mute">Si acepta, el bot confirma solo.</div></div>'}).join('');
+  var att=S.prospects.filter(function(x){return x.needsAttention&&!S.requests.some(function(r){return r.prospectId===x.id&&r.status==='pendiente'})});
+  h+='<h2 style="margin:14px 0 8px">Necesitan tu atención ('+att.length+')</h2>';
+  if(!att.length)h+='<div class="card mute">Nada pendiente.</div>';
+  h+=att.map(function(p){return '<div class="card"><div class="row"><div class="grow"><b>'+esc(p.name)+'</b> · '+esc(p.phone)+'<div class="mute">'+esc(p.attentionReason||'Revisa la conversación')+'</div></div>'+botBadge(p)+'</div><div class="actions"><button class="b" data-act="aopen2" data-id="'+esc(p.id)+'">Ver conversación</button><button class="b" data-act="attok" data-id="'+esc(p.id)+'">Ya lo atendí</button><button class="b" data-act="botmode" data-id="'+esc(p.id)+'">'+(p.botMode==='pausado'?'▶ Reactivar bot':'⏸ Pausar bot')+'</button></div></div>'}).join('');
+  var sim=S.prospects.filter(function(x){return x.source==='Simulador'});
+  h+='<h2 style="margin:14px 0 8px">Probador (tú haces de prospecto)</h2><div class="card"><div class="mute">Escribe como si fueras alguien que llegó de un anuncio y mira cómo responde el bot. No envía nada a WhatsApp.</div>';
+  if(!sim.length)h+='<div class="actions"><button class="b p" data-act="simnew">Crear conversación de prueba</button></div>';
+  else{var cur=sim.find(function(x){return x.id===(S.botSim&&S.botSim.id)})||sim[0];
+    if(!S.botSim||S.botSim.id!==cur.id)S.botSim={id:cur.id,busy:false,err:''};
+    var msgs=S.botMsgs[cur.id]||[];
+    h+='<div style="margin:8px 0;max-height:300px;overflow:auto">'+(msgs.length?msgs.slice(-14).map(function(m){return '<div style="margin:6px 0;'+(m.dir==='in'?'':'text-align:right')+'"><span class="badge '+(m.dir==='in'?'s-por_confirmar':'s-confirmado')+'">'+(m.dir==='in'?'Prospecto':'Bot')+'</span><div>'+esc(m.body)+'</div></div>'}).join(''):'<div class="mute">Aún no hay mensajes. Escribe el primero, por ejemplo: «Hola, vi su anuncio».</div>')+'</div>'
+     +'<div class="row"><input id="sim_in" placeholder="Escribe como prospecto" class="grow"><button class="b p" data-act="simgo" data-id="'+esc(cur.id)+'"'+(S.botSim.busy?' disabled':'')+'>'+(S.botSim.busy?'…':'Enviar')+'</button></div>'
+     +(S.botSim.err?'<div class="err">'+esc(S.botSim.err)+'</div>':'')+'<div class="actions"><button class="b d" data-act="simnew">Nueva conversación de prueba</button></div>';}
+  return h+'</div>';
+}
 function paidThisMonth(cid){var p=S.payments.find(function(x){return x.client_id===cid&&x.month===monthKey()});return !!(p&&p.paid)}
 function renderAdmin(){
   var tab=S.tab.admin;
   var nDue=S.prospects.filter(function(x){return C.dueToday(x,C.isoDay(new Date()))}).length;
-  nav([['prospectos','Prospectos'+(nDue?' ('+nDue+')':'')],['resumen','Resumen'],['clientes','Clientes y cobros'],['nuevo','Agregar cliente']],tab,'admin');
+  var nReq=S.requests.length+S.prospects.filter(function(x){return x.needsAttention}).length;
+  nav([['prospectos','Prospectos'+(nDue?' ('+nDue+')':'')],['bot','🤖 Bot'+(nReq?' ('+nReq+')':'')],['resumen','Resumen'],['clientes','Clientes y cobros'],['nuevo','Agregar cliente']],tab,'admin');
   var rows=S.clients.map(function(c){
     var s=C.summarize(ordersOf(c.id).map(function(o){return Object.assign({},o,{history:historyFor(o)})}));
     return {c:c,s:s,pend:ordersOf(c.id).filter(function(o){return o.status==='por_confirmar'}).length};
   });
   var h='';
   if(tab==='prospectos'){h=viewProspects()}
+  else if(tab==='bot'){h=viewBot()}
   else if(tab==='resumen'){
     var activos=rows.filter(function(r){return r.c.subStatus==='active'}).length;
     var mrr=rows.filter(function(r){return r.c.subStatus==='active'}).reduce(function(a,r){return a+r.c.price},0);
@@ -769,7 +828,9 @@ async function run(fn){
 document.addEventListener('click',function(e){
   var t=e.target.closest('[data-act]'); if(!t||t.tagName==='INPUT'||t.tagName==='SELECT'||t.tagName==='TEXTAREA')return;
   var a=t.dataset.act,id=t.dataset.id,o=id&&S.orders.find(function(x){return x.id===id}),c=currentClient();
-  if(a==='tab'){S.tab[t.dataset.scope]=t.dataset.tab;S.created='';S.adminInfo=null;render()}
+  if(a==='tab'){S.tab[t.dataset.scope]=t.dataset.tab;S.created='';S.adminInfo=null;render();
+    if(t.dataset.scope==='admin'&&t.dataset.tab==='bot'){(async function(){try{S.botStatus=await api.botCall({action:'status'})}catch(e){S.botStatus={claude:false,live:false}}
+      var sim=S.prospects.filter(function(x){return x.source==='Simulador'})[0];if(sim)S.botMsgs[sim.id]=await api.loadMessages(sim.id);render()})()}}
   else if(a==='filter'){S.filter=t.dataset.f;render()}
   else if(a==='logout'){run(async function(){await api.logout();S.session=null;S.isAdmin=false;S.viewAs=null})}
   else if(a==='login'){run(async function(){var em=$('#em').value.trim(),pw=$('#pw').value;if(!em||!pw)throw new Error('Escribe tu correo y contraseña');await api.login(em,pw);await api.load()})}
@@ -830,6 +891,18 @@ document.addEventListener('click',function(e){
     run(async function(){var ptc={meeting_at:md.toISOString(),meeting_status:'confirmada',stage:'reunion',next_follow_up:C.isoDay(md)};applyProspect(pm,ptc);await api.saveMeeting(id,ptc.meeting_at,'confirmada');await api.updateProspect(id,{stage:'reunion',next_follow_up:ptc.next_follow_up});toast('Reunión confirmada. Agrégala al calendario y envía la confirmación.')})}
   else if(a==='meetcancel'){var pc=S.prospects.find(function(x){return x.id===id});if(!confirm('¿Cancelar esta reunión?'))return;
     run(async function(){var ptc={meeting_at:null,meeting_status:'cancelada'};applyProspect(pc,ptc);await api.saveMeeting(id,null,'cancelada')})}
+  else if(a==='rqok'){run(async function(){var r=await api.botCall({action:'decide',request_id:id,decision:'confirmar',simulated:DEMO});S.requests=S.requests.filter(function(x){return x.id!==id});await api.load();toast(r.sent?'Confirmado y enviado al prospecto.':'Confirmado. '+(r.note==='simulado'?'(Simulado: no se envió a WhatsApp.)':'Escríbele tú: '+r.note))})}
+  else if(a==='rqno'){run(async function(){var r=await api.botCall({action:'decide',request_id:id,decision:'rechazar',simulated:DEMO});S.requests=S.requests.filter(function(x){return x.id!==id});await api.load();toast(r.sent?'Le avisé al prospecto.':'Registrado. '+(r.note||''))})}
+  else if(a==='rqchg'){var nv=$('#rq_new_'+id).value;if(!C.parseGuayaquil(nv)){toast('Elige día y hora para proponer.');return}
+    run(async function(){try{var r=await api.botCall({action:'decide',request_id:id,decision:'cambiar',new_at:nv,simulated:DEMO});await api.load();toast(r.sent?'Le propuse esa hora al prospecto.':'Propuesta registrada. '+(r.note||''))}catch(e){if(e.code==='horario_fuera_de_ventana')toast('Ese horario está fuera de lunes a viernes, 9:00 a 19:00.');else throw e}})}
+  else if(a==='botmode'){var pb=S.prospects.find(function(x){return x.id===id});var nm=pb.botMode==='pausado'?'auto':'pausado';run(async function(){pb.botMode=nm;await api.setBotMode(id,nm)})}
+  else if(a==='attok'){var pa2=S.prospects.find(function(x){return x.id===id});run(async function(){pa2.needsAttention=false;await api.clearAttention(id)})}
+  else if(a==='aopen2'){S.tab.admin='prospectos';S.chat={id:id,messages:[],sug:null,busy:false,err:''};run(async function(){S.chat.messages=await api.loadMessages(id)})}
+  else if(a==='simnew'){run(async function(){await api.createTestProspect();await api.load();S.botSim=null})}
+  else if(a==='simgo'){var tx=($('#sim_in').value||'').trim();if(!tx)return;S.botSim.busy=true;S.botSim.err='';render();
+    (async function(){try{await api.botCall({action:'simulate',prospect_id:id,text:tx});S.botMsgs[id]=await api.loadMessages(id);await api.load()}
+      catch(e){S.botSim.err=e.code==='not_configured'?'Falta la clave de Claude (ANTHROPIC_API_KEY) en Supabase.':e.code==='bad_key'?'La clave de Claude no es válida.':'No pude generar la respuesta. Intenta de nuevo.'}
+      S.botSim.busy=false;render()})()}
   else if(a==='reset'&&api.reset){if(confirm('¿Borrar todo y volver a los ejemplos?'))api.reset()}
 });
 document.addEventListener('change',function(e){
