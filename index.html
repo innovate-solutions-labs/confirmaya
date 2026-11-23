@@ -260,7 +260,8 @@ window.CONFIRMAYA_CONFIG = {
     agendar: 'Perfecto, {nombre} 🙌 Hagamos una llamada de 20 minutos para mostrarte cómo se ve una tienda y el desglose completo. ¿Te va mejor mañana o pasado mañana? ¿En la mañana o en la tarde?',
     plazo: 'Sin problema, {nombre}. ¿Para cuándo crees que lo tendrías? Te escribo ese día y lo vemos con calma.',
     sin_capital: 'Gracias por decírmelo, {nombre}. Cuando quieras arrancar, escríbeme y lo vemos. Mientras tanto, cualquier duda me la haces por aquí 😊',
-    recordatorio: 'Hola {nombre}, te recuerdo nuestra reunión de hoy. Si necesitas cambiar la hora, avísame por aquí 🙌'
+    recordatorio: 'Hola {nombre}, te recuerdo nuestra reunión de hoy. Si necesitas cambiar la hora, avísame por aquí 🙌',
+    reunion_confirmada: 'Listo, {nombre} ✅ Quedamos para el {fecha} (hora de Ecuador). Te envío el enlace de la videollamada antes de la hora. Si necesitas cambiarla, avísame por aquí.'
   };
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
   function isoDay(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
@@ -299,8 +300,48 @@ window.CONFIRMAYA_CONFIG = {
   }
   function fillProspect(tpl, p, settings) {
     var v = settings && settings.video ? 'Míralo aquí: ' + settings.video : '';
-    var map = { nombre: (p.name || '').split(' ')[0] || 'amigo', video: v };
+    var map = { nombre: (p.name || '').split(' ')[0] || 'amigo', video: v, fecha: p.meetingAt ? formatMeeting(new Date(p.meetingAt)) : '(fecha por confirmar)' };
     return String(tpl).replace(/\{(\w+)\}/g, function (all, k) { return k in map ? map[k] : all; }).replace(/[ \t]+\n/g, '\n').replace(/[ \t]+$/g, '');
+  }
+
+
+  /* ---------- Reuniones (hora de Ecuador, UTC-5 sin cambio de horario) ---------- */
+  var TZ = 'America/Guayaquil';
+  function tzParts(date) {
+    var f = new Intl.DateTimeFormat('en-US', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', weekday: 'short', hourCycle: 'h23' });
+    var o = {}; f.formatToParts(date).forEach(function (x) { o[x.type] = x.value; });
+    var wd = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }[o.weekday];
+    return { y: o.year, mo: o.month, d: o.day, h: Number(o.hour), mi: Number(o.minute), wd: wd };
+  }
+  // Lunes a viernes, de 9:00 a 19:00, y que la reunión termine antes de las 19:00
+  function inBusinessWindow(date, minutes) {
+    var t = tzParts(date), start = t.h * 60 + t.mi;
+    return t.wd >= 1 && t.wd <= 5 && start >= 9 * 60 && start + (minutes || 20) <= 19 * 60;
+  }
+  // 'YYYY-MM-DDTHH:MM' (lo que entrega el campo de fecha) se interpreta como hora de Ecuador
+  function parseGuayaquil(local) {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(String(local))) return null;
+    var d = new Date(String(local) + ':00-05:00');
+    return isNaN(d.getTime()) ? null : d;
+  }
+  function toGuayaquilInput(date) {
+    var t = tzParts(date);
+    return t.y + '-' + t.mo + '-' + t.d + 'T' + pad2(t.h) + ':' + pad2(t.mi);
+  }
+  function calStamp(date) {
+    var t = tzParts(date);
+    return t.y + t.mo + t.d + 'T' + pad2(t.h) + pad2(t.mi) + '00';
+  }
+  function calendarLink(title, date, minutes, details) {
+    var end = new Date(date.getTime() + (minutes || 20) * 60000);
+    return 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' + encodeURIComponent(title)
+      + '&dates=' + calStamp(date) + '/' + calStamp(end) + '&ctz=' + encodeURIComponent(TZ)
+      + '&details=' + encodeURIComponent(details || '');
+  }
+  function formatMeeting(date) {
+    try {
+      return new Intl.DateTimeFormat('es-EC', { timeZone: TZ, weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
+    } catch (e) { return String(date); }
   }
 
   var api = {
@@ -309,6 +350,7 @@ window.CONFIRMAYA_CONFIG = {
     riskLevel: riskLevel, DEFAULT_TEMPLATES: DEFAULT_TEMPLATES, fillTemplate: fillTemplate,
     money: money, summarize: summarize, STATES: STATES,
     PROSPECT_STAGES: PROSPECT_STAGES, PROSPECT_TEMPLATES: PROSPECT_TEMPLATES, isoDay: isoDay, addDays: addDays,
+    inBusinessWindow: inBusinessWindow, parseGuayaquil: parseGuayaquil, toGuayaquilInput: toGuayaquilInput, calendarLink: calendarLink, formatMeeting: formatMeeting,
     suggestProspect: suggestProspect, afterContact: afterContact, nextStage: nextStage, dueToday: dueToday, fillProspect: fillProspect
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -334,8 +376,8 @@ var toastTimer;
 function toast(m){var t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.hidden=true},4000)}
 
 /* ---------- Estado ---------- */
-var S={prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'pedidos'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
-function applyProspect(p,patch){if('stage' in patch)p.stage=patch.stage;if('followups' in patch)p.followups=patch.followups;if('next_follow_up' in patch)p.nextFollowUp=patch.next_follow_up;if('last_contact_at' in patch)p.lastContact=Date.parse(patch.last_contact_at);if('note' in patch)p.note=patch.note}
+var S={chat:null,prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'pedidos'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
+function applyProspect(p,patch){if('stage' in patch)p.stage=patch.stage;if('followups' in patch)p.followups=patch.followups;if('next_follow_up' in patch)p.nextFollowUp=patch.next_follow_up;if('last_contact_at' in patch)p.lastContact=Date.parse(patch.last_contact_at);if('note' in patch)p.note=patch.note;if('meeting_at' in patch)p.meetingAt=patch.meeting_at?Date.parse(patch.meeting_at):null;if('meeting_status' in patch)p.meetingStatus=patch.meeting_status}
 function client(id){return S.clients.find(function(c){return c.id===id})}
 function currentClient(){return S.isAdmin?(S.viewAs?client(S.viewAs):null):S.clients[0]||null}
 function ordersOf(id){return S.orders.filter(function(o){return o.clientId===id}).sort(function(a,b){return b.created-a.created})}
@@ -360,7 +402,7 @@ function historyFor(o){
 var api;
 function dbToClient(r){return {id:r.id,name:r.name,store:r.store,phone:r.phone||'',email:r.email||'',price:Number(r.price)||0,advance:Number(r.advance),templates:r.templates||{},subStatus:r.sub_status,periodEnd:r.current_period_end,userId:r.user_id}}
 function dbToOrder(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.created_at),status:r.status,qty:r.qty,product:r.product,total:Number(r.total),name:r.name,phone:r.phone||'',province:r.province||'',city:r.city||'',address:r.address||'',guide:r.guide||'',number:r.number||'',history:{delivered:r.hist_delivered,returned:r.hist_returned},advanceAsked:!!r.advance_asked}}
-function dbToProspect(r){return {id:r.id,name:r.name,phone:r.phone,source:r.source,stage:r.stage,note:r.note||'',followups:r.followups||0,nextFollowUp:r.next_follow_up||null,lastContact:r.last_contact_at?Date.parse(r.last_contact_at):null,created:Date.parse(r.created_at)}}
+function dbToProspect(r){return {id:r.id,name:r.name,phone:r.phone,source:r.source,stage:r.stage,note:r.note||'',followups:r.followups||0,nextFollowUp:r.next_follow_up||null,lastContact:r.last_contact_at?Date.parse(r.last_contact_at):null,created:Date.parse(r.created_at),meetingAt:r.meeting_at?Date.parse(r.meeting_at):null,meetingStatus:r.meeting_status||null}}
 function dbToCheckout(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.updated_at||r.created_at),name:r.name||'',phone:r.phone||'',product:r.product||'',total:Number(r.total)||0,recoverUrl:r.recover_url||'',status:r.status}}
 
 function realApi(){
@@ -408,6 +450,16 @@ function realApi(){
     updateProspect:async function(id,patch){var m=Object.assign({},patch,{updated_at:new Date().toISOString()});fail(await sb.from('prospects').update(m).eq('id',id))},
     deleteProspect:async function(id){fail(await sb.from('prospects').delete().eq('id',id))},
     saveAdminSettings:async function(){fail(await sb.from('admin_settings').update({data:S.settings}).eq('id',1))},
+    loadMessages:async function(pid){var r=fail(await sb.from('prospect_messages').select('*').eq('prospect_id',pid).order('created_at',{ascending:true}).limit(60));return (r.data||[]).map(function(m){return {dir:m.direction,body:m.body,at:Date.parse(m.created_at)}})},
+    addMessage:async function(pid,dir,body){fail(await sb.from('prospect_messages').insert({prospect_id:pid,direction:dir,body:body}))},
+    saveMeeting:async function(id,iso,status){fail(await sb.from('prospects').update({meeting_at:iso,meeting_status:status,updated_at:new Date().toISOString()}).eq('id',id))},
+    assistant:async function(pid,text){
+      var s=(await sb.auth.getSession()).data.session;
+      var r=await fetch(CFG.url+'/functions/v1/assistant',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+s.access_token,'apikey':CFG.key},body:JSON.stringify({prospect_id:pid,incoming:text})});
+      var j=await r.json().catch(function(){return {}});
+      if(!r.ok){var e=new Error(j.error||('Error '+r.status));e.code=j.error;throw e}
+      return j;
+    },
     admin:fn
   };
 }
@@ -452,6 +504,15 @@ function demoApi(){
     },
     addProspect:async function(d){S.prospects.unshift({id:uid(),name:d.name,phone:d.phone,source:'Anuncio Meta',stage:'nuevo',note:d.note||'',followups:0,nextFollowUp:C.isoDay(new Date()),lastContact:null,created:Date.now()});save()},
     updateProspect:async function(){save()}, deleteProspect:async function(id){S.prospects=S.prospects.filter(function(x){return x.id!==id});save()}, saveAdminSettings:async function(){save()},
+    loadMessages:async function(pid){return (S.demoMsgs&&S.demoMsgs[pid])||[]},
+    addMessage:async function(pid,dir,body){S.demoMsgs=S.demoMsgs||{};(S.demoMsgs[pid]=S.demoMsgs[pid]||[]).push({dir:dir,body:body,at:Date.now()})},
+    saveMeeting:async function(){save()},
+    assistant:async function(pid,text){
+      S.demoMsgs=S.demoMsgs||{};(S.demoMsgs[pid]=S.demoMsgs[pid]||[]).push({dir:'in',body:text,at:Date.now()});
+      if(/agend|reuni|llamada|lunes|martes|mi[eé]rcoles|jueves|viernes|hora|ma[nñ]ana/i.test(text))return {reply:'Claro. Déjame confirmar mi agenda y te confirmo en unos minutos. ¿Prefieres en la mañana o en la tarde?',needs_human:true,reason:'Pidió agendar: confirma tu horario antes de responder.',intent:'agendar',requested_time:text.slice(0,60),suggested_stage:'calificado'};
+      if(/cu[aá]nto|costo|precio|vale/i.test(text))return {reply:'Para arrancar la inversión es de unos $450 el primer mes. Casi la mitad ($180) es la publicidad en Meta, que se paga directo desde tu cuenta. No prometemos ventas: probamos con poco presupuesto y subimos lo que funciona. ¿Cómo lo ves?',needs_human:false,reason:'',intent:'precio',requested_time:null,suggested_stage:'calificado'};
+      return {reply:'Qué bueno. Cuéntame un poco más: ¿qué te gustaría vender?',needs_human:false,reason:'',intent:'duda',requested_time:null,suggested_stage:null};
+    },
     reset:function(){localStorage.removeItem(KEY);location.reload()}
   };
 }
@@ -596,7 +657,7 @@ function viewTemplates(c){
 
 /* ===== ADMINISTRADOR ===== */
 var PTPL_LABEL={bienvenida:'Enviar bienvenida',seguimiento24:'Seguimiento (24 h)',seguimiento72:'Último seguimiento',contexto:'Responderle: cómo trabajamos',costo:'Enviar el costo',agendar:'Dijo 1: proponer reunión',plazo:'Dijo 2: pedir plazo',sin_capital:'Dijo 3: sin capital por ahora',recordatorio:'Recordar la reunión'};
-var PTPL_NAMES={bienvenida:'1. Bienvenida (el video lo adjuntas tú)',contexto:'2. Cuando responde qué quiere vender',costo:'3. El costo, con opciones 1, 2 y 3',agendar:'4a. Dijo 1: proponer reunión',plazo:'4b. Dijo 2: pedir plazo',sin_capital:'4c. Dijo 3: sin capital por ahora',seguimiento24:'Seguimiento a las 24 h',seguimiento72:'Último seguimiento (72 h)',recordatorio:'Recordatorio de reunión'};
+var PTPL_NAMES={bienvenida:'1. Bienvenida (el video lo adjuntas tú)',contexto:'2. Cuando responde qué quiere vender',costo:'3. El costo, con opciones 1, 2 y 3',agendar:'4a. Dijo 1: proponer reunión',plazo:'4b. Dijo 2: pedir plazo',sin_capital:'4c. Dijo 3: sin capital por ahora',seguimiento24:'Seguimiento a las 24 h',seguimiento72:'Último seguimiento (72 h)',recordatorio:'Recordatorio de reunión',reunion_confirmada:'Confirmación de reunión'};
 function ptplOf(k){return (S.settings.templates&&S.settings.templates[k])||C.PROSPECT_TEMPLATES[k]}
 function stageLabel(st){var f=C.PROSPECT_STAGES.find(function(x){return x[0]===st});return f?f[1]:st}
 function prospectLink(p,k){return C.validEcPhone(p.phone)?C.waLink(p.phone,C.fillProspect(ptplOf(k),p,S.settings)):'#'}
@@ -613,6 +674,32 @@ function prospectCard(p,today){
     var ns=C.nextStage(p.stage);
     h+='<button class="b g" data-act="padv" data-id="'+esc(p.id)+'">✓ Pasó a: '+esc(stageLabel(ns))+'</button><button class="b d" data-act="plost" data-id="'+esc(p.id)+'">Perdido</button>';
   }else h+='<button class="b" data-act="preopen" data-id="'+esc(p.id)+'">Reabrir</button><button class="b d" data-act="pdel" data-id="'+esc(p.id)+'">Borrar</button>';
+  h+='<button class="b" data-act="aopen" data-id="'+esc(p.id)+'">🤖 Asistente'+(S.chat&&S.chat.id===p.id?' ▲':'')+'</button></div>';
+  if(p.meetingAt&&p.meetingStatus==='confirmada')h+='<div class="alert info">📅 Reunión: <b>'+esc(C.formatMeeting(new Date(p.meetingAt)))+'</b></div>';
+  if(S.chat&&S.chat.id===p.id)h+=assistantPanel(p);
+  return h+'</div>';
+}
+function meetingLinks(p){
+  var d=new Date(p.meetingAt);if(isNaN(d.getTime()))return '';
+  var cal=C.calendarLink('Reunión con '+p.name+' (Innovate Solutions)',d,20,'WhatsApp: '+p.phone+(p.note?'\nNota: '+p.note:'')+'\nEnlace de la videollamada: (agregar)');
+  var conf=C.waLink(p.phone,C.fillProspect(ptplOf('reunion_confirmada'),p,S.settings));
+  return '<div class="actions"><a class="b p" target="_blank" rel="noopener" href="'+esc(conf)+'">💬 Enviarle la confirmación</a><a class="b g" target="_blank" rel="noopener" href="'+esc(cal)+'">📅 Agregar a Google Calendar</a><button class="b d" data-act="meetcancel" data-id="'+esc(p.id)+'">Cancelar reunión</button></div>';
+}
+function assistantPanel(p){
+  var c=S.chat,h='<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)"><b>🤖 Asistente</b> <span class="mute">Propone la respuesta; tú la revisas y la envías. Nunca escribe solo.</span>';
+  if(c.messages.length)h+='<div style="margin:8px 0;max-height:180px;overflow:auto;font-size:14px">'+c.messages.slice(-8).map(function(m){return '<div class="mute" style="margin:3px 0"><b>'+(m.dir==='in'?'Prospecto':'Tú')+':</b> '+esc(m.body)+'</div>'}).join('')+'</div>';
+  h+='<label>Pega lo que te escribió</label><textarea id="as_in" style="min-height:70px" placeholder="Pega aquí el mensaje del prospecto"></textarea>'
+   +'<div class="actions"><button class="b p" data-act="asgo" data-id="'+esc(p.id)+'"'+(c.busy?' disabled':'')+'>'+(c.busy?'Pensando…':'Sugerir respuesta')+'</button></div>';
+  if(c.err)h+='<div class="err">'+esc(c.err)+'</div>';
+  if(c.sug){var s=c.sug;
+    h+='<div style="margin-top:10px">'+(s.needs_human?'<div class="alert amarillo"><b>Revísalo tú antes de enviar.</b> '+esc(s.reason||'')+(s.requested_time?' · Pidió: <b>'+esc(s.requested_time)+'</b>':'')+'</div>':'<div class="mute">Intención detectada: '+esc(s.intent)+'</div>')
+     +'<label>Respuesta sugerida (puedes editarla)</label><textarea id="as_out">'+esc(s.reply)+'</textarea>'
+     +'<div class="actions"><button class="b p" data-act="assend" data-id="'+esc(p.id)+'">💬 Abrir en WhatsApp con esta respuesta</button>'
+     +(s.suggested_stage&&s.suggested_stage!==p.stage?'<button class="b" data-act="asstage" data-id="'+esc(p.id)+'" data-s="'+esc(s.suggested_stage)+'">Pasar a: '+esc(stageLabel(s.suggested_stage))+'</button>':'')+'</div></div>';
+  }
+  h+='<div style="margin-top:12px"><b>📅 Reunión</b> <span class="mute">Lunes a viernes, 9:00 a 19:00 (hora de Ecuador). Primero revisa tu calendario.</span>'
+   +'<div class="row" style="margin-top:6px"><input type="datetime-local" id="as_when" style="max-width:240px" value="'+(p.meetingAt?esc(C.toGuayaquilInput(new Date(p.meetingAt))):'')+'"><button class="b g" data-act="meetsave" data-id="'+esc(p.id)+'">Confirmar reunión</button></div>';
+  if(p.meetingAt&&p.meetingStatus==='confirmada')h+=meetingLinks(p);
   return h+'</div></div>';
 }
 function viewProspects(){
@@ -626,7 +713,10 @@ function viewProspects(){
    +'<label>Nota (opcional)</label><input id="pr_note" placeholder="Ej. escribió por el anuncio de ropa"><div id="prErr" class="err"></div><div class="actions"><button class="b p" data-act="padd">Guardar</button></div></details>'
    +'<details class="card"><summary class="mute">Mis mensajes y el enlace de mi video</summary><label>Enlace del video (opcional; si lo dejas vacío, adjuntas el video en el chat)</label><input data-act="pvideo" value="'+esc(S.settings.video||'')+'" placeholder="https://...">'
    +Object.keys(PTPL_NAMES).map(function(k){return '<label>'+esc(PTPL_NAMES[k])+'</label><textarea data-act="ptpl" data-k="'+k+'">'+esc(ptplOf(k))+'</textarea>'}).join('')
-   +'<div class="mute" style="margin-top:6px">Puedes usar {nombre} y {video}. Si no hay enlace de video, {video} no aparece.</div></details>';
+   +'<div class="mute" style="margin-top:6px">Puedes usar {nombre} y {video}. Si no hay enlace de video, {video} no aparece.</div>'
+   +'<label>Base de conocimiento del asistente (si la dejas vacía, usa la estándar de Innovate)</label><textarea data-act="pkb" style="min-height:140px" placeholder="Describe tu negocio, costos, preguntas frecuentes y lo que NO se debe prometer">'+esc(S.settings.kb||'')+'</textarea></details>';
+  var meets=ps.filter(function(p){return p.meetingStatus==='confirmada'&&p.meetingAt&&p.meetingAt>=Date.now()-3600000}).sort(function(a,b){return a.meetingAt-b.meetingAt});
+  if(meets.length)h+='<h2 style="margin:14px 0 8px">📅 Reuniones próximas ('+meets.length+')</h2>'+meets.map(function(p){return '<div class="card"><div class="row"><div class="grow"><b>'+esc(p.name)+'</b> · '+esc(C.formatMeeting(new Date(p.meetingAt)))+'<div class="mute">'+esc(p.phone)+'</div></div></div>'+meetingLinks(p)+'</div>'}).join('');
   h+='<h2 style="margin:14px 0 8px">Para escribir hoy ('+due.length+')</h2>'+(due.length?due.map(function(p){return prospectCard(p,today)}).join(''):'<div class="card mute">No tienes seguimientos pendientes hoy. 🎉</div>');
   if(wait.length)h+='<h2 style="margin:14px 0 8px">En seguimiento ('+wait.length+')</h2>'+wait.map(function(p){return prospectCard(p,today)}).join('');
   if(done.length)h+='<details style="margin-top:14px"><summary class="mute">Cerrados y perdidos ('+done.length+')</summary>'+done.map(function(p){return prospectCard(p,today)}).join('')+'</details>';
@@ -720,6 +810,26 @@ document.addEventListener('click',function(e){
   else if(a==='plost'){var pl=S.prospects.find(function(x){return x.id===id});run(async function(){var ptc={stage:'perdido',next_follow_up:null};applyProspect(pl,ptc);await api.updateProspect(id,ptc)})}
   else if(a==='preopen'){var po=S.prospects.find(function(x){return x.id===id});run(async function(){var ptc={stage:'nuevo',followups:0,next_follow_up:C.isoDay(new Date())};applyProspect(po,ptc);await api.updateProspect(id,ptc)})}
   else if(a==='pdel'){if(!confirm('¿Borrar este prospecto?'))return;run(async function(){await api.deleteProspect(id);S.prospects=S.prospects.filter(function(x){return x.id!==id})})}
+  else if(a==='aopen'){if(S.chat&&S.chat.id===id){S.chat=null;render();return}
+    S.chat={id:id,messages:[],sug:null,busy:false,err:''};
+    run(async function(){S.chat.messages=await api.loadMessages(id)})}
+  else if(a==='asgo'){var txt=($('#as_in').value||'').trim();if(!txt){S.chat.err='Pega primero el mensaje del prospecto.';render();return}
+    S.chat.busy=true;S.chat.err='';S.chat.sug=null;render();
+    (async function(){try{var sg=await api.assistant(id,txt);S.chat.sug=sg;S.chat.messages=await api.loadMessages(id)}
+      catch(e){S.chat.err=e.code==='not_configured'?'Falta la clave de Claude (ANTHROPIC_API_KEY) en Supabase. Mira la guía que te dejé.':e.code==='bad_key'?'La clave de Claude no es válida: revísala en Supabase.':'No pude generar la respuesta. Intenta de nuevo.'}
+      S.chat.busy=false;render()})()}
+  else if(a==='assend'){var out=($('#as_out').value||'').trim();var pq=S.prospects.find(function(x){return x.id===id});if(!out||!pq)return;
+    window.open(C.waLink(pq.phone,out),'_blank','noopener');
+    var ptc={last_contact_at:new Date().toISOString(),next_follow_up:C.addDays(C.isoDay(new Date()),1)};applyProspect(pq,ptc);
+    run(async function(){await api.addMessage(id,'out',out);await api.updateProspect(id,ptc);S.chat.messages=await api.loadMessages(id);S.chat.sug=null})}
+  else if(a==='asstage'){var ps2=S.prospects.find(function(x){return x.id===id});run(async function(){var ptc={stage:t.dataset.s,next_follow_up:C.isoDay(new Date())};applyProspect(ps2,ptc);await api.updateProspect(id,ptc)})}
+  else if(a==='meetsave'){var v=$('#as_when').value,md=C.parseGuayaquil(v),pm=S.prospects.find(function(x){return x.id===id});
+    if(!md){S.chat.err='Elige día y hora de la reunión.';render();return}
+    if(!C.inBusinessWindow(md,20)&&!confirm('Ese horario está fuera de lunes a viernes, 9:00 a 19:00. ¿Confirmar igual?'))return;
+    S.chat.err='';
+    run(async function(){var ptc={meeting_at:md.toISOString(),meeting_status:'confirmada',stage:'reunion',next_follow_up:C.isoDay(md)};applyProspect(pm,ptc);await api.saveMeeting(id,ptc.meeting_at,'confirmada');await api.updateProspect(id,{stage:'reunion',next_follow_up:ptc.next_follow_up});toast('Reunión confirmada. Agrégala al calendario y envía la confirmación.')})}
+  else if(a==='meetcancel'){var pc=S.prospects.find(function(x){return x.id===id});if(!confirm('¿Cancelar esta reunión?'))return;
+    run(async function(){var ptc={meeting_at:null,meeting_status:'cancelada'};applyProspect(pc,ptc);await api.saveMeeting(id,null,'cancelada')})}
   else if(a==='reset'&&api.reset){if(confirm('¿Borrar todo y volver a los ejemplos?'))api.reset()}
 });
 document.addEventListener('change',function(e){
@@ -734,6 +844,7 @@ document.addEventListener('change',function(e){
   else if(a==='advance'&&c){c.advance=Math.max(0,Number(t.value)||0);run(async function(){await api.saveSettings(c)})}
   else if(a==='tpl'&&c){c.templates=c.templates||{};c.templates[t.dataset.k]=t.value;run(async function(){await api.saveSettings(c)})}
   else if(a==='pnote'){var pn2=S.prospects.find(function(x){return x.id===id});if(pn2){pn2.note=t.value.trim();run(async function(){await api.updateProspect(id,{note:pn2.note})})}}
+  else if(a==='pkb'){S.settings.kb=t.value.trim();run(async function(){await api.saveAdminSettings()})}
   else if(a==='pvideo'){S.settings.video=t.value.trim();run(async function(){await api.saveAdminSettings()})}
   else if(a==='ptpl'){S.settings.templates=S.settings.templates||{};S.settings.templates[t.dataset.k]=t.value;run(async function(){await api.saveAdminSettings()})}
   else if(a==='price'){var cl=client(id);cl.price=Math.max(0,Number(t.value)||0);run(async function(){await api.setPrice(id,cl.price)})}
