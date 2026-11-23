@@ -207,13 +207,14 @@ window.CONFIRMAYA_CONFIG = {
     adelanto: 'Hola {nombre}, soy de {tienda}. Para enviar tu pedido de {producto} necesitamos que cubras el costo del envío por adelantado ({adelanto}). Se descuenta del total y así garantizamos tu entrega. ¿Te enviamos los datos para el pago?',
     enviado: 'Hola {nombre} 🚚 Tu pedido de {producto} ya salió. Número de guía: {guia}. Llegará en 1 a 5 días hábiles. Te pedimos estar atento al teléfono para recibirlo y tener {total} listo.',
     entrega: 'Hola {nombre}, hoy llega tu pedido de {producto}. Por favor ten listo {total} y estate atento al teléfono 📞 ¡Gracias por tu compra!',
+    oficina: 'Hola {nombre} 👋 Soy de {tienda}. Para tu pedido de {producto}, por la cobertura de tu sector la transportadora no alcanza a llegar directo hasta tu dirección. Para que lo recibas sin problema, puedes retirarlo en una oficina de Servientrega cercana a ti:\n\n{oficinas}\n\n¿Cuál te queda mejor? Respóndeme con el número y lo dejamos listo 📦',
     carrito: 'Hola {nombre} 👋 Soy de {tienda}. Vimos que dejaste pendiente tu pedido de {producto} ({total}). ¿Te quedó alguna duda o te ayudamos a terminarlo? Aquí puedes completarlo: {enlace}'
   };
 
   function money(n) {
     return '$' + (Number(n) || 0).toFixed(2);
   }
-  function fillTemplate(tpl, order, store) {
+  function fillTemplate(tpl, order, store, extra) {
     var map = {
       nombre: (order.name || '').split(' ')[0] || 'cliente',
       tienda: (store && store.name) || 'la tienda',
@@ -223,7 +224,10 @@ window.CONFIRMAYA_CONFIG = {
       ciudad: order.city || '',
       guia: order.guide || '(pendiente)',
       adelanto: money((store && store.advance) != null ? store.advance : 8),
-      enlace: order.recoverUrl || ''
+      enlace: order.recoverUrl || '',
+      oficinas: ((extra && extra.offices) || []).map(function (o, i) { return (i + 1) + '\uFE0F\u20E3 ' + o; }).join('\n'),
+      oficina1: ((extra && extra.offices) || [])[0] || '',
+      oficina2: ((extra && extra.offices) || [])[1] || ''
     };
     return String(tpl).replace(/\{(\w+)\}/g, function (all, k) { return k in map ? map[k] : all; });
   }
@@ -351,6 +355,9 @@ window.CONFIRMAYA_CONFIG = {
     return String(t == null ? '' : t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
       .replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
   }
+  function prettyOffice(t) {
+    return cell(t).replace(/_/g, ' ').toLowerCase().replace(/(^|\s)([a-zñáéíóú])/g, function (m, a, b) { return a + b.toUpperCase(); });
+  }
   function keyOf(t) { return normPlace(t).replace(SECTOR_NOISE, ' ').replace(/\s+/g, ' ').trim(); }
   function cell(v) { return v == null ? '' : String(v).replace(/\s+/g, ' ').trim(); }
 
@@ -412,6 +419,7 @@ window.CONFIRMAYA_CONFIG = {
       var ia = MAIN_CARRIERS.indexOf(a), ib = MAIN_CARRIERS.indexOf(b);
       return (ia < 0 ? 9 : ia) - (ib < 0 ? 9 : ib);
     });
+    carriers = carriers.filter(function (x) { return MAIN_CARRIERS.indexOf(x) > -1; });
     var out = carriers.map(function (c) {
       var inCity = zones.filter(function (z) { return z.carrier === c && (z.city_norm === city || z.city_norm.indexOf(city) > -1 || city.indexOf(z.city_norm) > -1); });
       var hits = inCity.filter(function (z) { return (z.keys || []).some(function (k) { return k && hay.indexOf(' ' + k + ' ') > -1; }); });
@@ -431,7 +439,7 @@ window.CONFIRMAYA_CONFIG = {
     });
     var rank = { verde: 0, amarillo: 1, rojo: 2 };
     var main = out.filter(function (x) { return x.main; });
-    var level = 'verde', advice = '';
+    var level = 'verde', advice = '', pickup = null;
     if (main.length) {
       var best = main.slice().sort(function (a, b) { return rank[a.status] - rank[b.status]; })[0];
       var bad = main.filter(function (x) { return x.status === 'rojo'; });
@@ -443,11 +451,17 @@ window.CONFIRMAYA_CONFIG = {
       }
       else if (best.status !== 'rojo') advice = 'Con ' + bad.map(function (x) { return x.carrier; }).join(' y ') + ' hay problema. Cambia la transportadora a ' + best.carrier + ' en Dropi.';
       else {
-        var of = []; bad.forEach(function (x) { x.offices.forEach(function (o) { if (of.indexOf(o) < 0) of.push(o); }); });
-        advice = 'Zona difícil con las dos transportadoras.' + (of.length ? ' Servientrega puede dejarlo en oficina: ' + of.join(' u ') + ' (el cliente retira).' : '') + (main.some(function (x) { return x.meet; }) ? ' Gintracom coordina un punto de encuentro seguro con el cliente.' : '') + ' Si el cliente no puede retirar, mejor cancelar o pedir adelanto.';
+        var offs = [];
+        out.forEach(function (x) { if (x.carrier === 'SERVIENTREGA') x.offices.forEach(function (o) { var p = prettyOffice(o); if (p && offs.indexOf(p) < 0) offs.push(p); }); });
+        if (offs.length) {
+          pickup = { offices: offs.slice(0, 2) };
+          advice = 'Ninguna transportadora llega directo a esa dirección. Ofrécele al comprador retirar en una oficina de Servientrega (' + pickup.offices.join(' o ') + '). Cuando elija, cambia en Dropi la transportadora a Servientrega y la dirección a esa oficina.';
+        } else {
+          advice = 'Zona difícil con las dos transportadoras y sin oficina registrada.' + (main.some(function (x) { return x.meet; }) ? ' Gintracom coordina un punto de encuentro seguro con el cliente.' : '') + ' Si no se puede, mejor cancelar o pedir adelanto.';
+        }
       }
     }
-    return { level: level, advice: advice, carriers: out };
+    return { level: level, advice: advice, carriers: out, pickup: pickup };
   }
 
   var api = {
@@ -457,7 +471,7 @@ window.CONFIRMAYA_CONFIG = {
     money: money, summarize: summarize, STATES: STATES,
     PROSPECT_STAGES: PROSPECT_STAGES, PROSPECT_TEMPLATES: PROSPECT_TEMPLATES, isoDay: isoDay, addDays: addDays,
     inBusinessWindow: inBusinessWindow, parseGuayaquil: parseGuayaquil, toGuayaquilInput: toGuayaquilInput, calendarLink: calendarLink, formatMeeting: formatMeeting,
-    normPlace: normPlace, parseDangerSheets: parseDangerSheets, dangerAdvice: dangerAdvice,
+    normPlace: normPlace, prettyOffice: prettyOffice, parseDangerSheets: parseDangerSheets, dangerAdvice: dangerAdvice,
     suggestProspect: suggestProspect, afterContact: afterContact, nextStage: nextStage, dueToday: dueToday, fillProspect: fillProspect
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -508,7 +522,7 @@ function historyFor(o){
 /* ---------- Capa de datos ---------- */
 var api;
 function dbToClient(r){return {id:r.id,name:r.name,store:r.store,phone:r.phone||'',email:r.email||'',price:Number(r.price)||0,advance:Number(r.advance),templates:r.templates||{},subStatus:r.sub_status,periodEnd:r.current_period_end,userId:r.user_id}}
-function dbToOrder(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.created_at),status:r.status,qty:r.qty,product:r.product,total:Number(r.total),name:r.name,phone:r.phone||'',province:r.province||'',city:r.city||'',address:r.address||'',guide:r.guide||'',number:r.number||'',history:{delivered:r.hist_delivered,returned:r.hist_returned},advanceAsked:!!r.advance_asked}}
+function dbToOrder(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.created_at),status:r.status,qty:r.qty,product:r.product,total:Number(r.total),name:r.name,phone:r.phone||'',province:r.province||'',city:r.city||'',address:r.address||'',guide:r.guide||'',number:r.number||'',history:{delivered:r.hist_delivered,returned:r.hist_returned},advanceAsked:!!r.advance_asked,pickup:r.pickup_office||''}}
 function dbToProspect(r){return {id:r.id,name:r.name,phone:r.phone,source:r.source,stage:r.stage,note:r.note||'',followups:r.followups||0,nextFollowUp:r.next_follow_up||null,lastContact:r.last_contact_at?Date.parse(r.last_contact_at):null,created:Date.parse(r.created_at),meetingAt:r.meeting_at?Date.parse(r.meeting_at):null,meetingStatus:r.meeting_status||null,botMode:r.bot_mode||'auto',needsAttention:!!r.needs_attention,attentionReason:r.attention_reason||'',phoneNorm:r.phone_norm||''}}
 function dbToCheckout(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.updated_at||r.created_at),name:r.name||'',phone:r.phone||'',product:r.product||'',total:Number(r.total)||0,recoverUrl:r.recover_url||'',status:r.status}}
 
@@ -548,6 +562,7 @@ function realApi(){
       if('status' in patch)m.status=patch.status; if('guide' in patch)m.guide=patch.guide; if('phone' in patch)m.phone=patch.phone;
       if('history' in patch){m.hist_delivered=patch.history.delivered||0;m.hist_returned=patch.history.returned||0}
       if('advanceAsked' in patch)m.advance_asked=patch.advanceAsked;
+      if('pickup' in patch)m.pickup_office=patch.pickup||null;
       fail(await sb.from('orders').update(m).eq('id',id))},
     addOrder:async function(cid,d,phone){fail(await sb.from('orders').insert({client_id:cid,source:'manual',qty:d.qty,product:d.product,total:d.total,name:d.name,phone:phone,province:d.province,city:d.city,address:d.address}))},
     saveSettings:async function(c){fail(await sb.rpc('update_my_settings',{p_advance:c.advance,p_templates:c.templates}))},
@@ -736,7 +751,8 @@ function viewOrders(c){
 }
 function orderCard(o,c){
   var hist=historyFor(o),risk=C.riskLevel(hist),store={name:c.store,advance:c.advance},phoneOk=C.validEcPhone(o.phone);
-  function wa(k){return phoneOk?C.waLink(o.phone,C.fillTemplate(tplOf(c,k),o,store)):'#'}
+  var za=null;if(['por_confirmar','confirmado'].indexOf(o.status)>-1&&S.zones.length)za=C.dangerAdvice(S.zones,o);
+  function wa(k){return phoneOk?C.waLink(o.phone,C.fillTemplate(tplOf(c,k),o,store,{offices:za&&za.pickup?za.pickup.offices:[]})):'#'}
   function waBtn(k,label,cls){return '<a class="b '+(cls||'')+'" href="'+esc(wa(k))+'" target="_blank" rel="noopener" data-act="wa" data-id="'+esc(o.id)+'" data-k="'+k+'">'+label+'</a>'}
   var early=['por_confirmar','confirmado'].indexOf(o.status)>-1;
   var h='<div class="card"><div class="row"><div class="grow"><b>'+esc(o.name)+'</b> · '+esc(o.qty>1?o.qty+' × ':'')+esc(o.product)+'<div class="mute">'+esc(o.city)+' · '+esc(C.money(o.total))+' · '+esc(o.phone||'sin teléfono')+' · '+new Date(o.created).toLocaleDateString('es-EC')+(o.guide?' · guía '+esc(o.guide):'')+'</div></div>'
@@ -744,9 +760,10 @@ function orderCard(o,c){
   if(!phoneOk)h+='<div class="err">Falta un teléfono válido para abrir WhatsApp. Corrígelo abajo.</div>';
   if(early&&risk.level==='rojo')h+='<div class="alert rojo"><b>Comprador de alto riesgo.</b> Devuelve muchos pedidos. Pídele que adelante el envío ('+esc(C.money(c.advance))+') antes de despachar.</div>';
   else if(early&&risk.level==='amarillo')h+='<div class="alert amarillo"><b>Riesgo medio.</b> Confirma bien la dirección antes de enviar.</div>';
-  if(early&&S.zones.length){var za=C.dangerAdvice(S.zones,o);
-    if(za){h+='<div class="alert '+(za.level==='verde'?'info':za.level)+'"><b>🚦 Zona de entrega:</b> '+za.carriers.map(function(x){return '<span class="badge r-'+x.status+'" title="'+esc(x.text)+'">'+esc(x.carrier.charAt(0)+x.carrier.slice(1).toLowerCase())+'</span>'}).join(' ')
-      +'<br>'+esc(za.advice)+za.carriers.filter(function(x){return x.main&&x.status!=='verde'}).map(function(x){return '<br><span class="mute">'+esc(x.carrier.charAt(0)+x.carrier.slice(1).toLowerCase())+': '+esc(x.text)+'</span>'}).join('')+'</div>'}}
+  if(za){h+='<div class="alert '+(za.level==='verde'?'info':za.level)+'"><b>🚦 Zona de entrega:</b> '+za.carriers.map(function(x){return '<span class="badge r-'+x.status+'" title="'+esc(x.text)+'">'+esc(x.carrier.charAt(0)+x.carrier.slice(1).toLowerCase())+'</span>'}).join(' ')
+      +'<br>'+esc(za.advice)+za.carriers.filter(function(x){return x.status!=='verde'}).map(function(x){return '<br><span class="mute">'+esc(x.carrier.charAt(0)+x.carrier.slice(1).toLowerCase())+': '+esc(x.text)+'</span>'}).join('')+'</div>';
+    if(za.pickup&&!o.pickup){h+='<div class="actions" style="margin-top:8px">'+waBtn('oficina','🏢 Enviar opciones de retiro en oficina','p')+'<span class="mute">Cuando el cliente elija:</span>'+za.pickup.offices.map(function(of,i){return '<button class="b g" data-act="pickup" data-id="'+o.id+'" data-i="'+i+'">Eligió '+esc(of)+'</button>'}).join('')+'</div>'}}
+  if(o.pickup){h+='<div class="alert info"><b>✅ El cliente retira en: Servientrega '+esc(o.pickup)+'.</b><br>En Dropi cambia: <b>Transportadora → Servientrega</b> y <b>Dirección → «Retiro en oficina Servientrega '+esc(o.pickup)+'»</b> (deja el mismo nombre, teléfono y ciudad del comprador).<div class="actions" style="margin-top:6px"><button class="b" data-act="pickupclear" data-id="'+o.id+'">Quitar elección</button></div></div>'}
   h+='<div class="actions">';
   if(o.status==='por_confirmar'){
     h+=waBtn('confirmar','💬 Enviar confirmación','p')+waBtn('recordatorio','⏰ Recordatorio')+(risk.level==='rojo'||risk.level==='amarillo'?waBtn('adelanto','💵 Pedir adelanto'):'')
@@ -796,7 +813,7 @@ function viewReport(c){
   return h+'<div class="card"><h2>Resumen para copiar</h2><textarea readonly id="rep">'+esc(txt)+'</textarea><div class="actions"><button class="b p" data-act="copyrep">Copiar</button></div></div>';
 }
 function kpi(v,l){return '<div class="kpi"><b>'+esc(v)+'</b><span>'+esc(l)+'</span></div>'}
-var TPL_NAMES={confirmar:'Confirmar pedido',recordatorio:'Recordatorio',adelanto:'Pedir adelanto del envío',enviado:'Pedido enviado',entrega:'Aviso de entrega',carrito:'Carrito abandonado'};
+var TPL_NAMES={confirmar:'Confirmar pedido',oficina:'Retiro en oficina de Servientrega',recordatorio:'Recordatorio',adelanto:'Pedir adelanto del envío',enviado:'Pedido enviado',entrega:'Aviso de entrega',carrito:'Carrito abandonado'};
 function viewTemplates(c){
   var h='<div class="card"><h2>Mis mensajes</h2><div class="mute">Puedes usar: {nombre} {tienda} {producto} {total} {direccion} {ciudad} {guia} {adelanto} {enlace}</div><label>Adelanto de envío ($)</label><input type="number" step="0.5" min="0" data-act="advance" value="'+esc(c.advance)+'" style="max-width:140px"></div>';
   Object.keys(TPL_NAMES).forEach(function(k){h+='<div class="card"><label>'+TPL_NAMES[k]+'</label><textarea data-act="tpl" data-k="'+k+'">'+esc(tplOf(c,k))+'</textarea><div class="actions"><button class="b" data-act="tplreset" data-k="'+k+'">Restaurar</button></div></div>'});
@@ -969,6 +986,8 @@ document.addEventListener('click',function(e){
     if(t.dataset.scope==='admin'&&t.dataset.tab==='bot'){(async function(){try{S.botStatus=await api.botCall({action:'status'})}catch(e){S.botStatus={claude:false,live:false}}
       var sim=S.prospects.filter(function(x){return x.source==='Simulador'})[0];if(sim)S.botMsgs[sim.id]=await api.loadMessages(sim.id);render()})()}}
   else if(a==='filter'){S.filter=t.dataset.f;render()}
+  else if(a==='pickup'&&o){var zi=C.dangerAdvice(S.zones,o),ofs=zi&&zi.pickup?zi.pickup.offices:[],pick=ofs[Number(t.dataset.i)];if(pick){var pv=o.pickup;o.pickup=pick;run(async function(){try{await api.updateOrder(id,{pickup:pick})}catch(e){o.pickup=pv;throw e}})}}
+  else if(a==='pickupclear'&&o){var pv2=o.pickup;o.pickup='';run(async function(){try{await api.updateOrder(id,{pickup:''})}catch(e){o.pickup=pv2;throw e}})}
   else if(a==='zimport'){var fi=$('#zfile'),f=fi&&fi.files&&fi.files[0];
     if(!f){S.zoneMsg='Primero elige el archivo Excel.';render();return}
     S.zoneBusy=true;S.zoneMsg='';render();
