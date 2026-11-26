@@ -335,7 +335,10 @@ window.CONFIRMAYA_CONFIG = {
       oficina1: ((extra && extra.offices) || [])[0] || '',
       oficina2: ((extra && extra.offices) || [])[1] || ''
     };
-    return String(tpl).replace(/\{(\w+)\}/g, function (all, k) { return k in map ? map[k] : all; });
+    var base = String(tpl);
+    // sin enlace (formularios de Releasit) se quita la frase que lo anunciaba
+    if (!map.enlace) base = base.replace(/[ \t]*[^.!?\n]*\{enlace\}/g, '');
+    return base.replace(/\{(\w+)\}/g, function (all, k) { return k in map ? map[k] : all; });
   }
 
   /* ---------- Reportes ---------- */
