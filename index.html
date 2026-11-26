@@ -47,6 +47,10 @@ textarea{min-height:110px;resize:vertical}
 .kpi b{display:block;font-size:24px;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}.kpi span{font-size:12px;color:var(--mute)}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .alert{border-radius:8px;padding:9px 11px;margin-top:10px;font-size:14px}
+.bar{height:18px;border-radius:10px;background:#dbeafe;overflow:hidden;margin:8px 0}.bar i{display:block;height:100%;background:linear-gradient(90deg,#0ea5e9,#22c55e);border-radius:10px}
+.task{border-top:1px solid var(--line);padding:12px 0 2px}.task .actions{margin-top:8px}
+.tnum{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:30px;border-radius:15px;background:linear-gradient(90deg,#0ea5e9,#2563eb);color:#fff;font-weight:700;margin-right:8px;padding:0 8px}
+.big-n{font-size:30px;font-weight:800}
 .alert.rojo{background:var(--badbg);color:var(--bad)}.alert.amarillo{background:var(--warnbg);color:var(--warn)}.alert.info{background:#dbeafe;color:#1d4ed8}
 table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line)}
 .err{color:var(--bad);font-size:13px;margin-top:6px}
@@ -208,6 +212,9 @@ window.CONFIRMAYA_CONFIG = {
     enviado: 'Hola {nombre} 🚚 Tu pedido de {producto} ya salió. Número de guía: {guia}. Llegará en 1 a 5 días hábiles. Te pedimos estar atento al teléfono para recibirlo y tener {total} listo.',
     entrega: 'Hola {nombre}, hoy llega tu pedido de {producto}. Por favor ten listo {total} y estate atento al teléfono 📞 ¡Gracias por tu compra!',
     oficina: 'Hola {nombre} 👋 Soy de {tienda}. Para tu pedido de {producto}, por la cobertura de tu sector la transportadora no alcanza a llegar directo hasta tu dirección. Para que lo recibas sin problema, puedes retirarlo en una oficina de Servientrega cercana a ti:\n\n{oficinas}\n\n¿Cuál te queda mejor? Respóndeme con el número y lo dejamos listo 📦',
+    novedad: 'Hola {nombre}, soy de {tienda}. Tu pedido de {producto} (guía {guia}) ya debería haber llegado. ¿Lo recibiste? Si todavía no, cuéntanos en qué horario te encontramos y una referencia de tu dirección para coordinar la entrega 📦',
+    repetido: 'Hola {nombre}, soy de {tienda}. Vemos que registraste más de un pedido con nosotros ({producto}). ¿Deseas recibirlos todos o alguno fue por error? Respóndenos para despacharte bien 🙌',
+    direccion: 'Hola {nombre}, soy de {tienda}. Para que tu pedido de {producto} llegue sin problema necesitamos completar tu dirección. Tenemos: {direccion}, {ciudad}. ¿Nos indicas calle principal y secundaria, número de casa y una referencia? 📍',
     carrito: 'Hola {nombre} 👋 Soy de {tienda}. Vimos que dejaste pendiente tu pedido de {producto} ({total}). ¿Te quedó alguna duda o te ayudamos a terminarlo? Aquí puedes completarlo: {enlace}'
   };
 
@@ -464,6 +471,104 @@ window.CONFIRMAYA_CONFIG = {
     return { level: level, advice: advice, carriers: out, pickup: pickup };
   }
 
+  /* ---------- Tareas del día, pedidos estancados, repetidos, direcciones y meta del mes ---------- */
+  var HOUR = 3600000, DAY = 86400000;
+  var STALLED_DAYS = 5;     // el envío tarda de 2 a 5 días: desde el quinto se revisa
+  var MONTH_GOAL = 30;      // entregas al mes (30 × $15 = $450)
+  function dayKey(ts) { return new Date(ts - 5 * HOUR).toISOString().slice(0, 10); }   // fecha en Ecuador
+  function contactAt(o, k) { var v = o && o.contacts && o.contacts[k]; return v ? Date.parse(v) || 0 : 0; }
+
+  // Días en camino si el pedido está estancado; 0 si no
+  function stalledDays(o, now) {
+    if (!o || o.status !== 'enviado') return 0;
+    var from = o.shippedAt || o.created;
+    var d = Math.floor(((now || Date.now()) - from) / DAY);
+    return d >= STALLED_DAYS ? d : 0;
+  }
+  // Otros pedidos del mismo teléfono hechos con menos de 48 horas de diferencia
+  function duplicatesOf(o, orders) {
+    var p = normalizePhone(o && o.phone);
+    if (!p || o.status === 'cancelado') return [];
+    return (orders || []).filter(function (x) {
+      return x.id !== o.id && x.clientId === o.clientId && x.status !== 'cancelado' && normalizePhone(x.phone) === p && Math.abs(x.created - o.created) <= 48 * HOUR;
+    });
+  }
+  // Devuelve el motivo si la dirección parece incompleta; '' si se ve suficiente
+  function addressIssue(o) {
+    var a = normPlace(o && o.address);
+    if (!a) return 'No tiene dirección.';
+    if (a.length < 10) return 'La dirección es muy corta.';
+    var hasNumber = /\d/.test(a), corner = / (y|e) /.test(' ' + a + ' ');
+    var ref = /(frente|junto|diagonal|esquina|atras|detras|referencia|casa|edificio|conjunto|urbanizacion|ciudadela|cdla|sector|barrio|manzana| mz |villa|km|kilometro|parque|iglesia|escuela|colegio|tienda|oficina|redondel|via )/.test(' ' + a + ' ');
+    if (!hasNumber && !corner && !ref) return 'Falta número de casa, calle secundaria o referencia.';
+    return '';
+  }
+  // Avance de entregas del mes, contado desde la fecha de arranque de la campaña ('AAAA-MM-DD')
+  function addMonthsIso(iso, n) {
+    var p = iso.split('-').map(Number), y = p[0], m = p[1] - 1 + n;
+    var last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    return new Date(Date.UTC(y, m, Math.min(p[2], last))).toISOString().slice(0, 10);
+  }
+  function monthlyGoal(startIso, orders, now) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startIso || ''))) return null;
+    now = now || Date.now();
+    var today = dayKey(now);
+    if (today < startIso) return { status: 'antes', start: startIso, goal: MONTH_GOAL, delivered: 0 };
+    var k = 0;
+    while (addMonthsIso(startIso, k + 1) <= today) k++;
+    var from = addMonthsIso(startIso, k), to = addMonthsIso(startIso, k + 1);
+    var delivered = (orders || []).filter(function (o) {
+      if (o.status !== 'entregado') return false;
+      var d = dayKey(o.deliveredAt || o.created);
+      return d >= from && d < to;
+    }).length;
+    var total = (Date.parse(to) - Date.parse(from)) / DAY, passed = (Date.parse(today) - Date.parse(from)) / DAY + 1;
+    var month = k + 1, missing = Math.max(0, MONTH_GOAL - delivered);
+    var message = !missing ? '¡Llegaste a las ' + MONTH_GOAL + ' entregas! Cada entrega extra suma.'
+      : month === 1 ? 'Primer mes: estamos probando productos. Cada pedido que confirmas y entregas suma.'
+      : month === 2 ? 'Segundo mes: ya se ve qué funciona mejor. Confirma rápido y da seguimiento a cada envío.'
+      : 'Tu negocio se construye con constancia. Revisa tus tareas todos los días.';
+    return { status: 'activo', start: startIso, from: from, to: to, month: month, goal: MONTH_GOAL, delivered: delivered, missing: missing,
+      percent: Math.min(100, Math.round(delivered / MONTH_GOAL * 100)), message: message,
+      behind: passed >= 10 && delivered < (MONTH_GOAL * passed / total) / 2 };
+  }
+  // Lo que hay que hacer hoy, en orden. orders y checkouts son de un solo cliente.
+  function todayTasks(orders, checkouts, now) {
+    now = now || Date.now();
+    var today = dayKey(now);
+    var g = {
+      confirmar: [], recordar: [], subir: [], estancado: [], salio: [], entrega: []
+    };
+    var waiting = 0;
+    (orders || []).slice().sort(function (a, b) { return a.created - b.created; }).forEach(function (o) {
+      if (o.status === 'por_confirmar') {
+        var c1 = contactAt(o, 'confirmar'), r = contactAt(o, 'recordatorio');
+        if (!c1 && !r) g.confirmar.push(o);
+        else if (now - Math.max(c1, r) >= 20 * HOUR) g.recordar.push(o);
+        else waiting++;
+      } else if (o.status === 'confirmado') {
+        g.subir.push(o);
+      } else if (o.status === 'enviado') {
+        var days = Math.floor((now - (o.shippedAt || o.created)) / DAY);
+        if (days >= STALLED_DAYS) { var n = contactAt(o, 'novedad'); if (!n || dayKey(n) !== today) g.estancado.push(o); }
+        else if (!contactAt(o, 'enviado') && !contactAt(o, 'entrega')) g.salio.push(o);
+        else if (days >= 2 && !contactAt(o, 'entrega')) g.entrega.push(o);
+      }
+    });
+    var carts = (checkouts || []).filter(function (k) { return k.status === 'abierto'; });
+    var groups = [
+      { key: 'confirmar', title: 'Confirma los pedidos nuevos', help: 'Escríbeles cuanto antes: mientras más rápido, más ventas.', tpl: 'confirmar', items: g.confirmar },
+      { key: 'estancado', title: 'Revisa los pedidos que no llegan', help: 'Mira la guía en Dropi y resuelve la novedad hoy.', tpl: 'novedad', items: g.estancado },
+      { key: 'recordar', title: 'Recuerda a quienes no contestaron', help: 'Un segundo mensaje amable.', tpl: 'recordatorio', items: g.recordar },
+      { key: 'subir', title: 'Sube a Dropi los confirmados', help: 'Al generar la guía, el estado cambia solo.', tpl: '', items: g.subir },
+      { key: 'salio', title: 'Avisa que su pedido salió', help: 'Así están atentos al teléfono.', tpl: 'enviado', items: g.salio },
+      { key: 'entrega', title: 'Recuerda la entrega', help: 'Que tengan el dinero listo.', tpl: 'entrega', items: g.entrega },
+      { key: 'carritos', title: 'Recupera carritos abandonados', help: 'Personas que dejaron la compra a medias.', tpl: 'carrito', items: carts }
+    ].filter(function (x) { return x.items.length; });
+    var total = groups.reduce(function (a, x) { return a + x.items.length; }, 0);
+    return { groups: groups, total: total, waiting: waiting };
+  }
+
   var api = {
     parseOrderMessage: parseOrderMessage, parseMoney: parseMoney, fromShopifyOrder: fromShopifyOrder,
     normalizePhone: normalizePhone, validEcPhone: validEcPhone, waLink: waLink,
@@ -471,7 +576,7 @@ window.CONFIRMAYA_CONFIG = {
     money: money, summarize: summarize, STATES: STATES,
     PROSPECT_STAGES: PROSPECT_STAGES, PROSPECT_TEMPLATES: PROSPECT_TEMPLATES, isoDay: isoDay, addDays: addDays,
     inBusinessWindow: inBusinessWindow, parseGuayaquil: parseGuayaquil, toGuayaquilInput: toGuayaquilInput, calendarLink: calendarLink, formatMeeting: formatMeeting,
-    normPlace: normPlace, prettyOffice: prettyOffice, parseDangerSheets: parseDangerSheets, dangerAdvice: dangerAdvice,
+    normPlace: normPlace, stalledDays: stalledDays, duplicatesOf: duplicatesOf, addressIssue: addressIssue, monthlyGoal: monthlyGoal, todayTasks: todayTasks, dayKey: dayKey, prettyOffice: prettyOffice, parseDangerSheets: parseDangerSheets, dangerAdvice: dangerAdvice,
     suggestProspect: suggestProspect, afterContact: afterContact, nextStage: nextStage, dueToday: dueToday, fillProspect: fillProspect
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -487,7 +592,7 @@ var C = window.ConfirmaCore;
 var CFG = window.CONFIRMAYA_CONFIG || {};
 var DEMO = !CFG.url || !CFG.key || /[?&]demo\b/.test(location.search);
 var ACCESS = ['active','past_due','cortesia'];
-var KEY = 'confirmaya_demo_v2';
+var KEY = 'confirmaya_demo_v3';
 var $ = function(s){return document.querySelector(s)};
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function uid(){return Math.random().toString(36).slice(2,10)}
@@ -497,7 +602,7 @@ var toastTimer;
 function toast(m){var t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.hidden=true},4000)}
 
 /* ---------- Estado ---------- */
-var S={zones:[],zoneMsg:'',zoneBusy:false,botMsgs:{},botStatus:null,requests:[],botSim:null,chat:null,prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'pedidos'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
+var S={zones:[],zoneMsg:'',zoneBusy:false,botMsgs:{},botStatus:null,requests:[],botSim:null,chat:null,prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'hoy'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
 function applyProspect(p,patch){if('stage' in patch)p.stage=patch.stage;if('followups' in patch)p.followups=patch.followups;if('next_follow_up' in patch)p.nextFollowUp=patch.next_follow_up;if('last_contact_at' in patch)p.lastContact=Date.parse(patch.last_contact_at);if('note' in patch)p.note=patch.note;if('meeting_at' in patch)p.meetingAt=patch.meeting_at?Date.parse(patch.meeting_at):null;if('meeting_status' in patch)p.meetingStatus=patch.meeting_status}
 function client(id){return S.clients.find(function(c){return c.id===id})}
 function currentClient(){return S.isAdmin?(S.viewAs?client(S.viewAs):null):S.clients[0]||null}
@@ -521,8 +626,8 @@ function historyFor(o){
 
 /* ---------- Capa de datos ---------- */
 var api;
-function dbToClient(r){return {id:r.id,name:r.name,store:r.store,phone:r.phone||'',email:r.email||'',price:Number(r.price)||0,advance:Number(r.advance),templates:r.templates||{},subStatus:r.sub_status,periodEnd:r.current_period_end,userId:r.user_id}}
-function dbToOrder(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.created_at),status:r.status,qty:r.qty,product:r.product,total:Number(r.total),name:r.name,phone:r.phone||'',province:r.province||'',city:r.city||'',address:r.address||'',guide:r.guide||'',number:r.number||'',history:{delivered:r.hist_delivered,returned:r.hist_returned},advanceAsked:!!r.advance_asked,pickup:r.pickup_office||''}}
+function dbToClient(r){return {id:r.id,name:r.name,store:r.store,phone:r.phone||'',email:r.email||'',price:Number(r.price)||0,advance:Number(r.advance),templates:r.templates||{},subStatus:r.sub_status,periodEnd:r.current_period_end,userId:r.user_id,campaignStart:r.campaign_start||''}}
+function dbToOrder(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.created_at),status:r.status,qty:r.qty,product:r.product,total:Number(r.total),name:r.name,phone:r.phone||'',province:r.province||'',city:r.city||'',address:r.address||'',guide:r.guide||'',number:r.number||'',history:{delivered:r.hist_delivered,returned:r.hist_returned},advanceAsked:!!r.advance_asked,pickup:r.pickup_office||'',shippedAt:r.shipped_at?Date.parse(r.shipped_at):null,deliveredAt:r.delivered_at?Date.parse(r.delivered_at):null,contacts:r.contacts||{}}}
 function dbToProspect(r){return {id:r.id,name:r.name,phone:r.phone,source:r.source,stage:r.stage,note:r.note||'',followups:r.followups||0,nextFollowUp:r.next_follow_up||null,lastContact:r.last_contact_at?Date.parse(r.last_contact_at):null,created:Date.parse(r.created_at),meetingAt:r.meeting_at?Date.parse(r.meeting_at):null,meetingStatus:r.meeting_status||null,botMode:r.bot_mode||'auto',needsAttention:!!r.needs_attention,attentionReason:r.attention_reason||'',phoneNorm:r.phone_norm||''}}
 function dbToCheckout(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.updated_at||r.created_at),name:r.name||'',phone:r.phone||'',product:r.product||'',total:Number(r.total)||0,recoverUrl:r.recover_url||'',status:r.status}}
 
@@ -563,6 +668,7 @@ function realApi(){
       if('history' in patch){m.hist_delivered=patch.history.delivered||0;m.hist_returned=patch.history.returned||0}
       if('advanceAsked' in patch)m.advance_asked=patch.advanceAsked;
       if('pickup' in patch)m.pickup_office=patch.pickup||null;
+      if('contacts' in patch)m.contacts=patch.contacts;
       fail(await sb.from('orders').update(m).eq('id',id))},
     addOrder:async function(cid,d,phone){fail(await sb.from('orders').insert({client_id:cid,source:'manual',qty:d.qty,product:d.product,total:d.total,name:d.name,phone:phone,province:d.province,city:d.city,address:d.address}))},
     saveSettings:async function(c){fail(await sb.rpc('update_my_settings',{p_advance:c.advance,p_templates:c.templates}))},
@@ -574,6 +680,7 @@ function realApi(){
     clearZones:async function(){fail(await sb.from('danger_zones').delete().not('id','is',null));S.zones=[]},
     setSubStatus:async function(cid,st){fail(await sb.from('clients').update({sub_status:st}).eq('id',cid))},
     setPrice:async function(cid,price){fail(await sb.from('clients').update({price:price}).eq('id',cid))},
+    setCampaign:async function(cid,date){fail(await sb.from('clients').update({campaign_start:date||null}).eq('id',cid))},
     setPaid:async function(cid,month,paid,amount){fail(await sb.from('payments').upsert({client_id:cid,month:month,paid:paid,amount:amount}))},
     addProspect:async function(d){fail(await sb.from('prospects').insert({name:d.name,phone:d.phone,note:d.note||null,source:'Anuncio Meta',next_follow_up:C.isoDay(new Date())}))},
     updateProspect:async function(id,patch){var m=Object.assign({},patch,{updated_at:new Date().toISOString()});fail(await sb.from('prospects').update(m).eq('id',id))},
@@ -607,14 +714,15 @@ function demoApi(){
   function seed(){
     var now=Date.now(),day=86400000,mk=monthKey();
     var clients=[
-      {id:'c1',name:'Carla Ortiz',store:'Hogar Práctico EC',phone:'0991112233',email:'carla@demo.test',price:15,advance:8,templates:{},subStatus:'active'},
+      {id:'c1',name:'Carla Ortiz',store:'Hogar Práctico EC',phone:'0991112233',email:'carla@demo.test',price:15,advance:8,templates:{},subStatus:'active',campaignStart:C.dayKey(Date.now()-40*86400000)},
       {id:'c2',name:'Diego Vera',store:'Gadgets Cuenca',phone:'0984445566',email:'diego@demo.test',price:15,advance:8,templates:{},subStatus:'cortesia'},
       {id:'c3',name:'Paola Núñez',store:'Belleza Natural',phone:'0977778899',email:'paola@demo.test',price:15,advance:8,templates:{},subStatus:'canceled'}
     ];
-    function o(c,st,name,prod,tot,phone,city,ago,hist){return {id:uid(),clientId:c,created:now-ago*day,status:st,qty:1,product:prod,total:tot,name:name,phone:phone,province:'—',city:city,address:'Dirección de ejemplo',guide:'',number:'',history:hist||{},advanceAsked:false}}
+    function o(c,st,name,prod,tot,phone,city,ago,hist){return {id:uid(),clientId:c,created:now-ago*day,status:st,qty:1,product:prod,total:tot,name:name,phone:phone,province:'—',city:city,address:'Av. Principal 12-34 y Calle Larga',guide:'',number:'',history:hist||{},advanceAsked:false,contacts:{},shippedAt:(st==='enviado'||st==='entregado'||st==='devuelto')?now-ago*day:null,deliveredAt:st==='entregado'?now-Math.max(0,ago-3)*day:null}}
     var orders=[o('c1','entregado','Rosa Mena','Fuente De Chocolate',28,'0960000001','Cuenca',6),o('c1','entregado','Luis Paz','Organizador Cocina',26,'0960000002','Quito',5),
-      o('c1','devuelto','Ana Ruiz','Soporte Lavadora',30,'0960000003','Guayaquil',5),o('c1','enviado','Tito Vega','Fuente De Chocolate',28,'0960000004','Loja',2),
+      o('c1','devuelto','Ana Ruiz','Soporte Lavadora',30,'0960000003','Guayaquil',5),o('c1','enviado','Tito Vega','Fuente De Chocolate',28,'0960000004','Loja',7),o('c1','confirmado','Nora Lima','Aro De Luz',34.5,'0960000008','Cuenca',1),o('c1','enviado','Beto Ríos','Soporte Lavadora',30,'0960000009','Quito',0),
       o('c1','por_confirmar','Marta Solis','Organizador Cocina',26,'0960000005','Ambato',0,{delivered:5,returned:15}),
+      Object.assign(o('c1','por_confirmar','Elsa Mora','Aro De Luz',34.5,'0960000011','Cuenca',0),{address:'centro'}),o('c1','por_confirmar','Marta Solis','Aro De Luz',34.5,'0960000005','Ambato',0),
       o('c2','entregado','Iván Cruz','Aro De Luz',34.5,'0960000006','Quito',4),o('c2','por_confirmar','Sara León','Aro De Luz',34.5,'0960000007','Manta',1)];
     var checkouts=[{id:uid(),clientId:'c1',created:now-3600000,name:'Julia Rojas',phone:'0960000010',product:'Fuente De Chocolate',total:28,recoverUrl:'https://tienda.ejemplo/checkouts/abc',status:'abierto'}];
     var today=C.isoDay(new Date());
@@ -633,11 +741,11 @@ function demoApi(){
     login:async function(){}, logout:async function(){},
     load:async function(){S.session={demo:true};S.isAdmin=true;if(d){S.clients=d.clients;S.orders=d.orders;S.checkouts=d.checkouts;S.payments=d.payments;S.prospects=d.prospects||[];S.settings=d.settings||{};d=null}
       if(!S.zones.length)S.zones=[{carrier:'SERVIENTREGA',city:'GUAYAQUIL',city_norm:'guayaquil',zone:'CDLA. BASTION POPULAR',sector:'',keys:['bastion popular'],kind:'sin_cobertura',message:'EL SECTOR NO TIENE COBERTURA',office1:'GYE_ALBORADA',office2:'GYE_SAUCES'},{carrier:'GINTRACOM',city:'GUAYAQUIL',city_norm:'guayaquil',zone:'Sector Mapasingue',sector:'',keys:['mapasingue'],kind:'peligrosa',message:'Se coordina punto de encuentro seguro con el cliente.',office1:'',office2:''}]},
-    updateOrder:async function(){save()}, addOrder:async function(cid,r,phone){var x=r;S.orders.push({id:uid(),clientId:cid,created:Date.now(),status:'por_confirmar',qty:x.qty,product:x.product,total:x.total,name:x.name,phone:phone,province:x.province,city:x.city,address:x.address,guide:'',number:'',history:{},advanceAsked:false});save()},
+    updateOrder:async function(){save()}, addOrder:async function(cid,r,phone){var x=r;S.orders.push({id:uid(),clientId:cid,created:Date.now(),status:'por_confirmar',qty:x.qty,product:x.product,total:x.total,name:x.name,phone:phone,province:x.province,city:x.city,address:x.address,guide:'',number:'',history:{},advanceAsked:false,contacts:{}});save()},
     saveSettings:async function(){save()},
     importZones:async function(rows){S.zones=rows.slice();return rows.length},
     clearZones:async function(){S.zones=[]},
-    setCheckout:async function(){save()}, setSubStatus:async function(){save()}, setPrice:async function(){save()},
+    setCheckout:async function(){save()}, setSubStatus:async function(){save()}, setPrice:async function(){save()}, setCampaign:async function(){save()},
     setPaid:async function(cid,month,paid,amount){var p=S.payments.find(function(x){return x.client_id===cid&&x.month===month});if(p){p.paid=paid;p.amount=amount}else S.payments.push({client_id:cid,month:month,paid:paid,amount:amount});save()},
     admin:async function(b){
       if(b.action==='create'){var c={id:uid(),name:b.name,store:b.store,phone:'',email:b.email,price:b.price,advance:8,templates:{},subStatus:b.status};S.clients.push(c);save();return {client_id:c.id,link:'https://ejemplo.test/#recovery-demo',webhook_url:'https://ejemplo.test/functions/v1/shopify-webhook?t=demo'}}
@@ -731,15 +839,57 @@ var FILTERS=[['por_confirmar','Por confirmar'],['confirmado','Confirmados'],['en
 function renderClient(c){
   var tab=S.tab.client;
   var nCart=S.checkouts.filter(function(k){return k.clientId===c.id&&k.status==='abierto'}).length;
-  nav([['pedidos','Pedidos'],['carritos','Carritos'+(nCart?' ('+nCart+')':'')],['nuevo','Nuevo pedido'],['reporte','Reporte'],['mensajes','Mis mensajes']],tab,'client');
+  var nT=C.todayTasks(ordersOf(c.id),S.checkouts.filter(function(k){return k.clientId===c.id})).total;
+  nav([['hoy','Mis tareas de hoy'+(nT?' ('+nT+')':'')],['pedidos','Pedidos'],['carritos','Carritos'+(nCart?' ('+nCart+')':'')],['nuevo','Nuevo pedido'],['reporte','Reporte'],['mensajes','Mis mensajes']],tab,'client');
   var h=(S.isAdmin?'<div class="alert info">Estás viendo el panel como <b>'+esc(c.name)+'</b> ('+esc(statusLabelSub(c.subStatus))+').</div>':'')
    +(c.subStatus==='past_due'?'<div class="alert amarillo">Tu último pago no se pudo cobrar. Actualiza tu método de pago para no perder el acceso.'+(CFG.whopUrl?' <a href="'+esc(CFG.whopUrl)+'" target="_blank" rel="noopener">Ir a pagar</a>':'')+'</div>':'');
-  if(tab==='pedidos')h+=viewOrders(c);else if(tab==='carritos')h+=viewCarts(c);else if(tab==='nuevo')h+=viewNew(c);else if(tab==='reporte')h+=viewReport(c);else h+=viewTemplates(c);
+  if(tab==='hoy')h+=viewToday(c);else if(tab==='pedidos')h+=viewOrders(c);else if(tab==='carritos')h+=viewCarts(c);else if(tab==='nuevo')h+=viewNew(c);else if(tab==='reporte')h+=viewReport(c);else h+=viewTemplates(c);
   $('#view').innerHTML=h;
 }
 function statusLabelSub(s){return {pendiente:'Pendiente de pago',active:'Activo',past_due:'Pago atrasado',canceled:'Cancelado',cortesia:'Cortesía'}[s]||s}
 function statusLabel(s){return {por_confirmar:'Por confirmar',confirmado:'Confirmado',enviado:'Enviado',entregado:'Entregado',devuelto:'Devuelto',cancelado:'Cancelado'}[s]||s}
 
+function goalCard(c){
+  var g=C.monthlyGoal(c.campaignStart,ordersOf(c.id));
+  if(!g)return '';
+  if(g.status==='antes')return '<div class="card"><b>🎯 Mi meta del mes</b><div class="mute">Tu campaña arranca el '+esc(fmtDay(g.start))+'. Desde ese día contamos tus entregas.</div></div>';
+  return '<div class="card"><b>🎯 Mi meta del mes</b><div><span class="big-n">'+g.delivered+'</span> de '+g.goal+' entregas</div><div class="bar" role="img" aria-label="'+g.delivered+' de '+g.goal+' entregas"><i style="width:'+g.percent+'%"></i></div>'
+    +(g.missing?'<div>Te faltan <b>'+g.missing+'</b> para llegar a la meta.</div>':'')+'<div class="mute" style="margin-top:4px">'+esc(g.message)+'</div><div class="mute">Mes '+g.month+' · del '+esc(fmtDay(g.from))+' al '+esc(fmtDay(g.to))+'</div></div>';
+}
+function fmtDay(iso){var p=String(iso).split('-');return p[2]+'/'+p[1]+'/'+p[0]}
+function waAnchor(o,c,k,label,cls,act){
+  var ok=C.validEcPhone(o.phone),href=ok?C.waLink(o.phone,C.fillTemplate(tplOf(c,k),o,{name:c.store,advance:c.advance})):'#';
+  return '<a class="b '+(cls||'')+'" href="'+esc(href)+'" target="_blank" rel="noopener" data-act="'+(act||'wa')+'" data-id="'+esc(o.id)+'" data-k="'+k+'">'+label+'</a>';
+}
+var TASK_BTN={confirmar:'💬 Enviar confirmación',recordar:'⏰ Enviar recordatorio',estancado:'📦 Preguntar si llegó',salio:'🚚 Avisar que salió',entrega:'📞 Recordar la entrega',carritos:'💬 Escribirle'};
+function viewToday(c){
+  var mine=ordersOf(c.id),carts=S.checkouts.filter(function(k){return k.clientId===c.id});
+  var t=C.todayTasks(mine,carts);
+  var h='<div class="card"><h2>'+(t.total?'Hoy tienes '+t.total+' tarea'+(t.total>1?'s':''):'¡Todo al día! 🎉')+'</h2><div class="mute">'+(t.total?'Empieza por la primera y ve bajando.':'No tienes tareas pendientes ahora.')+(t.waiting?' Hay '+t.waiting+' pedido(s) esperando respuesta del comprador.':'')+'</div></div>';
+  t.groups.forEach(function(g,i){
+    h+='<div class="card"><div><span class="tnum">'+(i+1)+'</span><b>'+esc(g.title)+'</b> ('+g.items.length+')</div><div class="mute">'+esc(g.help)+'</div>';
+    g.items.slice(0,15).forEach(function(o){
+      h+='<div class="task"><b>'+esc(o.name||'Sin nombre')+'</b> · '+esc(o.product||'')+'<div class="mute">'+esc(o.city||'')+(o.city?' · ':'')+esc(C.money(o.total))+(g.key==='estancado'?' · lleva '+C.stalledDays(o)+' días en camino'+(o.guide?' · guía '+esc(o.guide):''):'')+'</div>';
+      if(g.key==='carritos'){h+='<div class="actions">'+waAnchor(o,c,'carrito',TASK_BTN.carritos,'p','cartwa')+'</div></div>';return}
+      var dup=C.duplicatesOf(o,mine),addr=(o.status==='por_confirmar'||o.status==='confirmado')?C.addressIssue(o):'';
+      var za=(o.status==='por_confirmar'||o.status==='confirmado')&&S.zones.length?C.dangerAdvice(S.zones,o):null;
+      if(dup.length&&(g.key==='confirmar'||g.key==='subir'))h+='<div class="alert amarillo">⚠️ <b>Pedido repetido:</b> este teléfono tiene otro pedido. Confirma antes de enviar.</div>';
+      if(addr)h+='<div class="alert amarillo">📍 <b>Dirección incompleta.</b> '+esc(addr)+'</div>';
+      h+='<div class="actions">';
+      if(g.tpl)h+=waAnchor(o,c,g.tpl,TASK_BTN[g.key],'p');
+      if(dup.length&&(g.key==='confirmar'||g.key==='subir'))h+=waAnchor(o,c,'repetido','Preguntar por el repetido','');
+      if(addr)h+=waAnchor(o,c,'direccion','📍 Pedir dirección','');
+      if(za&&za.level==='rojo')h+='<button class="b d" data-act="gotoorder" data-id="'+o.id+'" data-f="'+o.status+'">🚦 Revisar zona de entrega</button>';
+      if(g.key==='confirmar'||g.key==='recordar')h+='<button class="b g" data-act="status" data-id="'+o.id+'" data-s="confirmado">✓ Ya confirmó</button>';
+      if(g.key==='subir')h+='<button class="b" data-act="status" data-id="'+o.id+'" data-s="enviado">Ya tiene guía</button>';
+      if(g.key==='estancado'||g.key==='entrega')h+='<button class="b g" data-act="status" data-id="'+o.id+'" data-s="entregado">Entregado</button><button class="b d" data-act="status" data-id="'+o.id+'" data-s="devuelto">Devuelto</button>';
+      h+='</div></div>';
+    });
+    if(g.items.length>15)h+='<div class="mute">Y '+(g.items.length-15)+' más en la pestaña Pedidos.</div>';
+    h+='</div>';
+  });
+  return h+goalCard(c);
+}
 function viewOrders(c){
   var all=ordersOf(c.id), f=S.filter;
   var list=all.filter(function(o){if(f==='todos')return true;if(f==='cerrados')return ['entregado','devuelto','cancelado'].indexOf(o.status)>-1;return o.status===f});
@@ -755,7 +905,7 @@ function orderCard(o,c){
   function wa(k){return phoneOk?C.waLink(o.phone,C.fillTemplate(tplOf(c,k),o,store,{offices:za&&za.pickup?za.pickup.offices:[]})):'#'}
   function waBtn(k,label,cls){return '<a class="b '+(cls||'')+'" href="'+esc(wa(k))+'" target="_blank" rel="noopener" data-act="wa" data-id="'+esc(o.id)+'" data-k="'+k+'">'+label+'</a>'}
   var early=['por_confirmar','confirmado'].indexOf(o.status)>-1;
-  var h='<div class="card"><div class="row"><div class="grow"><b>'+esc(o.name)+'</b> · '+esc(o.qty>1?o.qty+' × ':'')+esc(o.product)+'<div class="mute">'+esc(o.city)+' · '+esc(C.money(o.total))+' · '+esc(o.phone||'sin teléfono')+' · '+new Date(o.created).toLocaleDateString('es-EC')+(o.guide?' · guía '+esc(o.guide):'')+'</div></div>'
+  var h='<div class="card" id="o-'+esc(o.id)+'"><div class="row"><div class="grow"><b>'+esc(o.name)+'</b> · '+esc(o.qty>1?o.qty+' × ':'')+esc(o.product)+'<div class="mute">'+esc(o.city)+' · '+esc(C.money(o.total))+' · '+esc(o.phone||'sin teléfono')+' · '+new Date(o.created).toLocaleDateString('es-EC')+(o.guide?' · guía '+esc(o.guide):'')+'</div></div>'
    +'<span class="badge s-'+o.status+'">'+esc(statusLabel(o.status))+'</span><span class="badge r-'+risk.level+'">'+esc(risk.label)+(risk.rate!=null?' ('+Math.round(risk.rate*100)+'% devol.)':'')+'</span></div>';
   if(!phoneOk)h+='<div class="err">Falta un teléfono válido para abrir WhatsApp. Corrígelo abajo.</div>';
   if(early&&risk.level==='rojo')h+='<div class="alert rojo"><b>Comprador de alto riesgo.</b> Devuelve muchos pedidos. Pídele que adelante el envío ('+esc(C.money(c.advance))+') antes de despachar.</div>';
@@ -764,6 +914,10 @@ function orderCard(o,c){
       +'<br>'+esc(za.advice)+za.carriers.filter(function(x){return x.status!=='verde'}).map(function(x){return '<br><span class="mute">'+esc(x.carrier.charAt(0)+x.carrier.slice(1).toLowerCase())+': '+esc(x.text)+'</span>'}).join('')+'</div>';
     if(za.pickup&&!o.pickup){h+='<div class="actions" style="margin-top:8px">'+waBtn('oficina','🏢 Enviar opciones de retiro en oficina','p')+'<span class="mute">Cuando el cliente elija:</span>'+za.pickup.offices.map(function(of,i){return '<button class="b g" data-act="pickup" data-id="'+o.id+'" data-i="'+i+'">Eligió '+esc(of)+'</button>'}).join('')+'</div>'}}
   if(o.pickup){h+='<div class="alert info"><b>✅ El cliente retira en: Servientrega '+esc(o.pickup)+'.</b><br>En Dropi cambia: <b>Transportadora → Servientrega</b> y <b>Dirección → «Retiro en oficina Servientrega '+esc(o.pickup)+'»</b> (deja el mismo nombre, teléfono y ciudad del comprador).<div class="actions" style="margin-top:6px"><button class="b" data-act="pickupclear" data-id="'+o.id+'">Quitar elección</button></div></div>'}
+  if(early){var dp=C.duplicatesOf(o,ordersOf(c.id));
+    if(dp.length)h+='<div class="alert amarillo">⚠️ <b>Pedido repetido:</b> este teléfono también pidió '+esc(dp.map(function(x){return x.product}).join(', '))+'. Confirma antes de despachar para no enviar dos veces.<div class="actions" style="margin-top:6px">'+waBtn('repetido','Preguntar por el repetido')+'</div></div>';
+    var ai=C.addressIssue(o);if(ai)h+='<div class="alert amarillo">📍 <b>Dirección incompleta.</b> '+esc(ai)+'<div class="actions" style="margin-top:6px">'+waBtn('direccion','📍 Pedir dirección')+'</div></div>'}
+  var sd=C.stalledDays(o);if(sd)h+='<div class="alert rojo">⏳ <b>Lleva '+sd+' días en camino.</b> Revisa la guía en Dropi y resuelve la novedad.<div class="actions" style="margin-top:6px">'+waBtn('novedad','📦 Preguntar si llegó')+'</div></div>';
   h+='<div class="actions">';
   if(o.status==='por_confirmar'){
     h+=waBtn('confirmar','💬 Enviar confirmación','p')+waBtn('recordatorio','⏰ Recordatorio')+(risk.level==='rojo'||risk.level==='amarillo'?waBtn('adelanto','💵 Pedir adelanto'):'')
@@ -813,7 +967,7 @@ function viewReport(c){
   return h+'<div class="card"><h2>Resumen para copiar</h2><textarea readonly id="rep">'+esc(txt)+'</textarea><div class="actions"><button class="b p" data-act="copyrep">Copiar</button></div></div>';
 }
 function kpi(v,l){return '<div class="kpi"><b>'+esc(v)+'</b><span>'+esc(l)+'</span></div>'}
-var TPL_NAMES={confirmar:'Confirmar pedido',oficina:'Retiro en oficina de Servientrega',recordatorio:'Recordatorio',adelanto:'Pedir adelanto del envío',enviado:'Pedido enviado',entrega:'Aviso de entrega',carrito:'Carrito abandonado'};
+var TPL_NAMES={confirmar:'Confirmar pedido',novedad:'Pedido que no llega',repetido:'Pedido repetido',direccion:'Pedir dirección completa',oficina:'Retiro en oficina de Servientrega',recordatorio:'Recordatorio',adelanto:'Pedir adelanto del envío',enviado:'Pedido enviado',entrega:'Aviso de entrega',carrito:'Carrito abandonado'};
 function viewTemplates(c){
   var h='<div class="card"><h2>Mis mensajes</h2><div class="mute">Puedes usar: {nombre} {tienda} {producto} {total} {direccion} {ciudad} {guia} {adelanto} {enlace}</div><label>Adelanto de envío ($)</label><input type="number" step="0.5" min="0" data-act="advance" value="'+esc(c.advance)+'" style="max-width:140px"></div>';
   Object.keys(TPL_NAMES).forEach(function(k){h+='<div class="card"><label>'+TPL_NAMES[k]+'</label><textarea data-act="tpl" data-k="'+k+'">'+esc(tplOf(c,k))+'</textarea><div class="actions"><button class="b" data-act="tplreset" data-k="'+k+'">Restaurar</button></div></div>'});
@@ -951,7 +1105,8 @@ function renderAdmin(){
        +'<button class="b" data-act="setsub" data-id="'+c.id+'" data-s="cortesia">Cortesía</button><button class="b" data-act="setsub" data-id="'+c.id+'" data-s="canceled">Suspender</button>'
        +'<button class="b" data-act="paid" data-id="'+c.id+'">'+(paidThisMonth(c.id)?'Quitar pago manual':'Marcar pago manual')+'</button></div>'
        +'<details style="margin-top:10px"'+(S.adminInfo&&S.adminInfo.id===c.id?' open':'')+'><summary class="mute">Acceso y Shopify</summary><div class="actions"><button class="b" data-act="link" data-id="'+c.id+'">Generar enlace de acceso</button><button class="b" data-act="hook" data-id="'+c.id+'">Datos del webhook de Shopify</button></div><div id="info-'+c.id+'">'+(S.adminInfo&&S.adminInfo.id===c.id?S.adminInfo.html:'')+'</div></details>'
-       +'<div class="row" style="margin-top:8px"><span class="mute">Mensualidad $</span><input type="number" style="width:90px" data-act="price" data-id="'+c.id+'" value="'+esc(c.price)+'"></div></div>';
+       +'<div class="row" style="margin-top:8px"><span class="mute">Mensualidad $</span><input type="number" style="width:90px" data-act="price" data-id="'+c.id+'" value="'+esc(c.price)+'"></div>'
+       +'<div class="row" style="margin-top:8px"><span class="mute">Arranque de campaña (día 8)</span><input type="date" style="width:170px" data-act="campaign" data-id="'+c.id+'" value="'+esc(c.campaignStart||'')+'">'+goalBadge(c)+'</div></div>';
     }).join('')||'<div class="card mute">Aún no hay clientes.</div>';
   }else{
     h='<div class="card"><h2>Agregar cliente a mano</h2><div class="mute">Para tus clientes de la agencia (cuenta cortesía) o pruebas. Quien paga por Whop se crea solo.</div>'
@@ -972,6 +1127,11 @@ function viewZones(){
   return h;
 }
 function loadXlsx(){return new Promise(function(res,rej){if(window.XLSX)return res();var sc=document.createElement('script');sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';sc.onload=res;sc.onerror=function(){rej(new Error('No pude cargar el lector de Excel. Revisa tu internet.'))};document.head.appendChild(sc)})}
+function goalBadge(c){
+  var g=C.monthlyGoal(c.campaignStart,ordersOf(c.id));
+  if(!g||g.status!=='activo')return '';
+  return '<span class="badge '+(g.behind?'r-rojo':g.missing?'s-confirmado':'s-entregado')+'">'+g.delivered+'/'+g.goal+' entregas · mes '+g.month+(g.behind?' · va atrasado, contáctalo':'')+'</span>';
+}
 function infoBox(label,value){return '<label>'+esc(label)+'</label><input readonly value="'+esc(value)+'" onclick="this.select()">'}
 
 /* ---------- Acciones ---------- */
@@ -1003,8 +1163,11 @@ document.addEventListener('click',function(e){
   else if(a==='setpw'){var p1=$('#pw1').value,p2=$('#pw2').value;
     if(p1.length<8){$('#authErr').textContent='Mínimo 8 caracteres.';return}if(p1!==p2){$('#authErr').textContent='Las contraseñas no coinciden.';return}
     run(async function(){await api.setPassword(p1);S.authView='login';history.replaceState(null,'',location.pathname);await api.load();toast('Contraseña guardada')})}
-  else if(a==='status'&&o){var prev=o.status;o.status=t.dataset.s;run(async function(){try{await api.updateOrder(id,{status:o.status})}catch(e){o.status=prev;throw e}})}
-  else if(a==='wa'&&o){if(t.dataset.k==='adelanto'&&!o.advanceAsked){o.advanceAsked=true;api.updateOrder(id,{advanceAsked:true}).catch(function(){})}}
+  else if(a==='status'&&o){var prev=o.status;o.status=t.dataset.s;if(o.status==='enviado'&&!o.shippedAt)o.shippedAt=Date.now();if(o.status==='entregado'&&!o.deliveredAt)o.deliveredAt=Date.now();run(async function(){try{await api.updateOrder(id,{status:o.status})}catch(e){o.status=prev;throw e}})}
+  else if(a==='wa'&&o){if(!C.validEcPhone(o.phone)){e.preventDefault();toast('Falta un teléfono válido. Corrígelo en la pestaña Pedidos.');return}
+    o.contacts=Object.assign({},o.contacts);o.contacts[t.dataset.k]=new Date().toISOString();var patch={contacts:o.contacts};
+    if(t.dataset.k==='adelanto'&&!o.advanceAsked){o.advanceAsked=true;patch.advanceAsked=true}
+    api.updateOrder(id,patch).catch(function(){});setTimeout(render,800)}
   else if(a==='cartwa'){var k=S.checkouts.find(function(x){return x.id===id});if(k&&k.status==='abierto'){k.status='contactado';api.setCheckout(id,'contactado').catch(function(){});setTimeout(render,300)}}
   else if(a==='cart'){run(async function(){await api.setCheckout(id,t.dataset.s);S.checkouts=S.checkouts.filter(function(x){return x.id!==id})})}
   else if(a==='add'&&c){
@@ -1015,7 +1178,8 @@ document.addEventListener('click',function(e){
   }
   else if(a==='copyrep'){var ta=$('#rep');ta.select();try{navigator.clipboard.writeText(ta.value).then(function(){t.textContent='¡Copiado!'},function(){t.textContent='Selecciona y copia (Ctrl+C)'})}catch(x){t.textContent='Selecciona y copia (Ctrl+C)'}}
   else if(a==='tplreset'&&c){delete c.templates[t.dataset.k];run(async function(){await api.saveSettings(c)})}
-  else if(a==='viewas'){S.viewAs=id;S.tab.client='pedidos';render()}
+  else if(a==='viewas'){S.viewAs=id;S.tab.client='hoy';render()}
+  else if(a==='gotoorder'){S.tab.client='pedidos';S.filter=t.dataset.f||'por_confirmar';render();setTimeout(function(){var el=document.getElementById('o-'+t.dataset.id);if(el)el.scrollIntoView({block:'start'})},50)}
   else if(a==='setsub'){var cc=client(id);if(!confirm('¿Cambiar el estado de '+cc.name+' a '+statusLabelSub(t.dataset.s)+'?'))return;run(async function(){await api.setSubStatus(id,t.dataset.s);cc.subStatus=t.dataset.s})}
   else if(a==='paid'){var cl=client(id),mk=monthKey(),np=!paidThisMonth(id);run(async function(){await api.setPaid(id,mk,np,cl.price);var p=S.payments.find(function(x){return x.client_id===id&&x.month===mk});if(p){p.paid=np}else S.payments.push({client_id:id,month:mk,paid:np,amount:cl.price})})}
   else if(a==='link'){run(async function(){var r=await api.admin({action:'recovery_link',client_id:id});var box=$('#info-'+id);if(!box)return;S.adminInfo={id:id,html:r.link?infoBox('Enlace para crear/cambiar contraseña (envíaselo por WhatsApp; caduca en 1 hora)',r.link):'<div class="err">No se pudo generar.</div>'}})}
@@ -1076,6 +1240,7 @@ document.addEventListener('change',function(e){
   if(t.id==='whoSel'){S.viewAs=t.value||null;render();return}
   if(!a)return;
   var id=t.dataset.id,o=id&&S.orders.find(function(x){return x.id===id}),c=currentClient();
+  if(a==='campaign'){var cm=client(id);cm.campaignStart=t.value;run(async function(){await api.setCampaign(id,t.value);toast('Fecha de arranque guardada')});return}
   if(a==='guide'&&o){o.guide=t.value.trim();run(async function(){await api.updateOrder(id,{guide:o.guide})})}
   else if(a==='phone'&&o){o.phone=t.value.trim();run(async function(){await api.updateOrder(id,{phone:o.phone})})}
   else if(a==='hist'&&o){o.history=o.history||{};o.history[t.dataset.w]=Math.max(0,parseInt(t.value,10)||0);run(async function(){await api.updateOrder(id,{history:o.history})})}
