@@ -72,6 +72,10 @@ details summary{cursor:pointer}
 @media(max-width:560px){main{padding:12px}}
 /* Página de presentación (solo la ve quien no ha entrado) */
 #lp{display:none}body.lp{background:#061430}body.lp>header,body.lp>main,body.lp>footer{display:none}body.lp #lp{display:block}
+#lp .linkbtn{background:none;border:0;padding:0;font:inherit;color:#5ff0e8;text-decoration:underline;cursor:pointer}
+#lp .cookies{position:fixed;left:16px;bottom:16px;z-index:40;width:min(440px,100% - 32px);padding:20px;border-radius:18px;background:#0d2450;border:1px solid #2f6aa8;box-shadow:0 18px 50px rgba(0,0,0,.55);font-size:16px;line-height:1.5}
+#lp .cookies p{margin:0}#lp .cookies div{display:flex;gap:10px;margin-top:14px}
+#lp .cookies button.btn{flex:1;border:2px solid transparent;font-family:inherit;cursor:pointer}#lp .cookies button.btn.o{border-color:#2f6aa8}
 #lp{color:#eaf4ff;font-size:18px;line-height:1.55;overflow-x:clip}
 #lp .w{max-width:980px;width:100%;margin:0 auto;padding-left:18px;padding-right:18px}
 #lp a{color:#5ff0e8}
@@ -163,7 +167,7 @@ details summary{cursor:pointer}
 <details><summary>¿Qué pasa si dejo de pagar?</summary><p>La suscripción es mensual y la manejas desde tu cuenta de Whop. Si termina, tu panel se pausa y tus pedidos quedan guardados.</p></details>
 </div></div>
 <div class="sec alt"><div class="w"><div class="price"><h3>ConfirmaYa</h3><strong>$15</strong><p>al mes · precio de lanzamiento</p><p style="margin:20px 0"><a class="btn" href="https://whop.com/checkout/plan_aMtwMIUuyKqTB" target="_blank" rel="noopener">Comprar ahora</a></p><p class="soft" style="margin:0">¿Dudas? <a href="https://wa.me/593998386074?text=Hola%2C%20quiero%20informaci%C3%B3n%20sobre%20ConfirmaYa" target="_blank" rel="noopener" style="font-weight:800;font-size:19px;text-decoration:underline">Escríbenos</a></p></div></div></div>
-<div class="pie">Creado por <b>Innovate Solutions Labs</b> · <a href="https://innovatesolutionsmkt.com/">innovatesolutionsmkt.com</a></div>
+<div class="pie">Creado por <b>Innovate Solutions Labs</b> · <a href="https://innovatesolutionsmkt.com/">innovatesolutionsmkt.com</a><br><a href="https://innovatesolutionsmkt.com/privacidad.html" target="_blank" rel="noopener">Privacidad</a> · <button type="button" class="linkbtn" data-cookies>Preferencias de cookies</button></div>
 </div>
 
 <script>
@@ -697,6 +701,111 @@ window.CONFIRMAYA_CONFIG = {
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ConfirmaCore = api;
 })(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
+/* Medición con Meta SOLO para la página pública de ConfirmaYa.
+   Dentro del panel (donde están los datos de los compradores) no se carga nunca:
+   la app llama a iniciar() únicamente cuando muestra la presentación a alguien sin sesión.
+   Nada sale sin que la persona toque «Aceptar». */
+window.ConfirmaMedicion = (function () {
+  var PIXEL = '1680506207067286';                 // PIXEL INNOVATE SOLUTIONS MKT 2027
+  var CAPI = 'https://yfgbckwdneohetdeixrm.supabase.co/functions/v1/meta-capi-web';
+  var CLAVE = 'cookies_publicidad';
+  // En una copia local no se envía nada, para no ensuciar los datos
+  var EN_LINEA = location.hostname === 'confirmaya.innovatesolutionsmkt.com';
+  var gpc = navigator.globalPrivacyControl === true;
+  var iniciado = false, activo = false, listo = null;
+
+  function leer() { try { return localStorage.getItem(CLAVE); } catch (e) { return null; } }
+  function guardar(v) { try { localStorage.setItem(CLAVE, v); } catch (e) {} }
+  function cookie(n) { var m = document.cookie.match(new RegExp('(?:^|; )' + n + '=([^;]*)')); return m ? m[1] : undefined; }
+
+  function fbc() {
+    var id = new URLSearchParams(location.search).get('fbclid');
+    return cookie('_fbc') || (id ? 'fb.1.' + Date.now() + '.' + id : undefined);
+  }
+
+  // Cada evento sale por el navegador y por el servidor con el mismo identificador
+  function enviar(nombre) {
+    if (!activo || !EN_LINEA) return;
+    var id = 'ev.' + Date.now() + '.' + Math.random().toString(36).slice(2, 10);
+    var url = location.origin + location.pathname + location.search;
+    window.fbq('track', nombre, {}, { eventID: id });
+    listo.then(function () {
+      if (!activo) return;
+      fetch(CAPI, {
+        method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_name: nombre, event_id: id, event_source_url: url, fbp: cookie('_fbp'), fbc: fbc() })
+      }).catch(function () {});
+    });
+  }
+
+  function activar() {
+    if (activo || gpc) return;
+    activo = true;
+    if (!EN_LINEA) return;
+    if (window.fbq) { window.fbq('consent', 'grant'); return; }
+    var f = window.fbq = function () { f.callMethod ? f.callMethod.apply(f, arguments) : f.queue.push(arguments); };
+    window._fbq = f; f.push = f; f.loaded = true; f.version = '2.0'; f.queue = [];
+    f.disablePushState = true;                    // sin visitas automáticas al cambiar la dirección
+    var s = document.createElement('script');
+    // se espera un momento a que el píxel cree su cookie (si está bloqueado, se sigue igual)
+    listo = new Promise(function (ok) {
+      s.onload = function () { setTimeout(ok, 600); };
+      s.onerror = ok;
+      setTimeout(ok, 3000);
+    });
+    s.async = true; s.src = 'https://connect.facebook.net/en_US/fbevents.js';
+    document.head.appendChild(s);
+    f('set', 'autoConfig', false, PIXEL);         // no lee botones ni textos de la página por su cuenta
+    f('init', PIXEL);
+    enviar('PageView');
+  }
+
+  function desactivar() {
+    activo = false;
+    if (window.fbq) window.fbq('consent', 'revoke');
+    ['_fbp', '_fbc'].forEach(function (n) {
+      ['', '; domain=.innovatesolutionsmkt.com'].forEach(function (d) { document.cookie = n + '=; Max-Age=0; path=/' + d; });
+    });
+  }
+
+  function cerrar() { var a = document.getElementById('aviso-cookies'); if (a) a.remove(); }
+
+  function preguntar() {
+    cerrar();
+    var a = document.createElement('section');
+    a.id = 'aviso-cookies'; a.className = 'cookies'; a.setAttribute('aria-label', 'Aviso de cookies');
+    var mas = '<a href="https://innovatesolutionsmkt.com/privacidad.html" target="_blank" rel="noopener">Más información</a>';
+    a.innerHTML = gpc
+      ? '<p>Tu navegador pide no ser rastreado, así que no usamos cookies de publicidad. ' + mas + '</p><div><button type="button" class="btn s" data-r="no">Entendido</button></div>'
+      : '<p>¿Nos permites usar cookies de Meta para medir nuestra publicidad? ' + mas + '</p><div><button type="button" class="btn o s" data-r="no">Rechazar</button><button type="button" class="btn s" data-r="si">Aceptar</button></div>';
+    a.addEventListener('click', function (e) {
+      var r = e.target.getAttribute && e.target.getAttribute('data-r');
+      if (!r) return;
+      guardar(r); cerrar();
+      if (r === 'si') activar(); else desactivar();
+    });
+    document.getElementById('lp').appendChild(a);  // solo existe dentro de la presentación
+  }
+
+  function iniciar() {
+    if (iniciado) return;
+    iniciado = true;
+    document.getElementById('lp').addEventListener('click', function (e) {
+      if (!e.target.closest) return;
+      if (e.target.closest('[data-cookies]')) preguntar();
+      else if (e.target.closest('a[href*="whop.com/checkout"]')) enviar('InitiateCheckout');
+      else if (e.target.closest('a[href*="wa.me/"]')) enviar('Contact');
+    });
+    var decision = leer();
+    if (decision === 'si') activar();
+    else if (decision !== 'no' && !gpc) preguntar();
+  }
+
+  return { iniciar: iniciar };
+})();
 
 </script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
@@ -1446,6 +1555,8 @@ async function boot(){
   }
   try{await api.load()}catch(e){toast('No se pudo cargar. Revisa tu conexión.')}
   S.loading=false;render();
+  // Medición solo en la presentación y para quien no es cliente: nunca dentro del panel
+  try{if(window.ConfirmaMedicion&&wantsLanding()&&!/access_token=|type=recovery/.test(location.hash)&&!Object.keys(localStorage).some(function(k){return /^sb-.*-auth-token/.test(k)}))window.ConfirmaMedicion.iniciar()}catch(e){}
   // refresco automático cada 30 s si el usuario no está escribiendo
   if(!DEMO)setInterval(function(){
     var ae=document.activeElement;
