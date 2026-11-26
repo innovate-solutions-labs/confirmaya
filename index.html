@@ -51,6 +51,8 @@ textarea{min-height:110px;resize:vertical}
 .task{border-top:1px solid var(--line);padding:12px 0 2px}.task .actions{margin-top:8px}
 .tnum{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:30px;border-radius:15px;background:linear-gradient(90deg,#0ea5e9,#2563eb);color:#fff;font-weight:700;margin-right:8px;padding:0 8px}
 .big-n{font-size:30px;font-weight:800}
+.path{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0}.path span{background:#eef4ff;border:1px solid var(--line);border-radius:8px;padding:5px 10px;font-weight:600;font-size:14px}.path i{font-style:normal;color:#2563eb;font-weight:800}
+.done .tnum{background:#16a34a}.sstep p{margin:8px 0}.sstep input{width:100%}
 .alert.rojo{background:var(--badbg);color:var(--bad)}.alert.amarillo{background:var(--warnbg);color:var(--warn)}.alert.info{background:#dbeafe;color:#1d4ed8}
 table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line)}
 .err{color:var(--bad);font-size:13px;margin-top:6px}
@@ -569,6 +571,26 @@ window.CONFIRMAYA_CONFIG = {
     return { groups: groups, total: total, waiting: waiting };
   }
 
+  /* ---------- Asistente "Configurar mi tienda" ---------- */
+  function setupProgress(client) {
+    var s = (client && client.setup) || {};
+    var ok = Date.parse((client && client.shopOkAt) || '') || 0, bad = Date.parse((client && client.shopBadAt) || '') || 0;
+    var connected = !!ok && ok >= bad;
+    var named = !!s.store || (!!(client && client.store) && String(client.store).trim().toLowerCase() !== 'mi tienda');
+    var steps = [
+      { key: 'store', done: named },
+      { key: 'hooks', done: !!s.hooks || connected },
+      { key: 'secret', done: !!s.secret || connected },
+      { key: 'verify', done: connected },
+      { key: 'dropify', done: !!s.dropify },
+      { key: 'archive', done: !!s.archive }
+    ];
+    var done = steps.filter(function (x) { return x.done; }).length;
+    var state = connected ? 'ok' : bad ? (s.secret ? 'codigo_mal' : 'falta_codigo') : 'esperando';
+    var map = {}; steps.forEach(function (x) { map[x.key] = x.done; });
+    return { steps: steps, is: map, done: done, total: steps.length, complete: done === steps.length, connected: connected, state: state };
+  }
+
   var api = {
     parseOrderMessage: parseOrderMessage, parseMoney: parseMoney, fromShopifyOrder: fromShopifyOrder,
     normalizePhone: normalizePhone, validEcPhone: validEcPhone, waLink: waLink,
@@ -576,7 +598,7 @@ window.CONFIRMAYA_CONFIG = {
     money: money, summarize: summarize, STATES: STATES,
     PROSPECT_STAGES: PROSPECT_STAGES, PROSPECT_TEMPLATES: PROSPECT_TEMPLATES, isoDay: isoDay, addDays: addDays,
     inBusinessWindow: inBusinessWindow, parseGuayaquil: parseGuayaquil, toGuayaquilInput: toGuayaquilInput, calendarLink: calendarLink, formatMeeting: formatMeeting,
-    normPlace: normPlace, stalledDays: stalledDays, duplicatesOf: duplicatesOf, addressIssue: addressIssue, monthlyGoal: monthlyGoal, todayTasks: todayTasks, dayKey: dayKey, prettyOffice: prettyOffice, parseDangerSheets: parseDangerSheets, dangerAdvice: dangerAdvice,
+    normPlace: normPlace, setupProgress: setupProgress, stalledDays: stalledDays, duplicatesOf: duplicatesOf, addressIssue: addressIssue, monthlyGoal: monthlyGoal, todayTasks: todayTasks, dayKey: dayKey, prettyOffice: prettyOffice, parseDangerSheets: parseDangerSheets, dangerAdvice: dangerAdvice,
     suggestProspect: suggestProspect, afterContact: afterContact, nextStage: nextStage, dueToday: dueToday, fillProspect: fillProspect
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -592,7 +614,7 @@ var C = window.ConfirmaCore;
 var CFG = window.CONFIRMAYA_CONFIG || {};
 var DEMO = !CFG.url || !CFG.key || /[?&]demo\b/.test(location.search);
 var ACCESS = ['active','past_due','cortesia'];
-var KEY = 'confirmaya_demo_v3';
+var KEY = 'confirmaya_demo_v4';
 var $ = function(s){return document.querySelector(s)};
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function uid(){return Math.random().toString(36).slice(2,10)}
@@ -602,7 +624,7 @@ var toastTimer;
 function toast(m){var t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.hidden=true},4000)}
 
 /* ---------- Estado ---------- */
-var S={zones:[],zoneMsg:'',zoneBusy:false,botMsgs:{},botStatus:null,requests:[],botSim:null,chat:null,prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'hoy'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
+var S={hook:{},suMsg:'',autoSetup:'',zones:[],zoneMsg:'',zoneBusy:false,botMsgs:{},botStatus:null,requests:[],botSim:null,chat:null,prospects:[],settings:{},loading:true,session:null,isAdmin:false,authView:'login',viewAs:null,clients:[],orders:[],checkouts:[],payments:[],tab:{admin:'prospectos',client:'hoy'},filter:'por_confirmar',days:7,busy:false,adminInfo:null};
 function applyProspect(p,patch){if('stage' in patch)p.stage=patch.stage;if('followups' in patch)p.followups=patch.followups;if('next_follow_up' in patch)p.nextFollowUp=patch.next_follow_up;if('last_contact_at' in patch)p.lastContact=Date.parse(patch.last_contact_at);if('note' in patch)p.note=patch.note;if('meeting_at' in patch)p.meetingAt=patch.meeting_at?Date.parse(patch.meeting_at):null;if('meeting_status' in patch)p.meetingStatus=patch.meeting_status}
 function client(id){return S.clients.find(function(c){return c.id===id})}
 function currentClient(){return S.isAdmin?(S.viewAs?client(S.viewAs):null):S.clients[0]||null}
@@ -626,7 +648,7 @@ function historyFor(o){
 
 /* ---------- Capa de datos ---------- */
 var api;
-function dbToClient(r){return {id:r.id,name:r.name,store:r.store,phone:r.phone||'',email:r.email||'',price:Number(r.price)||0,advance:Number(r.advance),templates:r.templates||{},subStatus:r.sub_status,periodEnd:r.current_period_end,userId:r.user_id,campaignStart:r.campaign_start||''}}
+function dbToClient(r){return {id:r.id,name:r.name,store:r.store,phone:r.phone||'',email:r.email||'',price:Number(r.price)||0,advance:Number(r.advance),templates:r.templates||{},subStatus:r.sub_status,periodEnd:r.current_period_end,userId:r.user_id,campaignStart:r.campaign_start||'',setup:r.setup||{},shopOkAt:r.shop_ok_at||'',shopBadAt:r.shop_bad_at||''}}
 function dbToOrder(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.created_at),status:r.status,qty:r.qty,product:r.product,total:Number(r.total),name:r.name,phone:r.phone||'',province:r.province||'',city:r.city||'',address:r.address||'',guide:r.guide||'',number:r.number||'',history:{delivered:r.hist_delivered,returned:r.hist_returned},advanceAsked:!!r.advance_asked,pickup:r.pickup_office||'',shippedAt:r.shipped_at?Date.parse(r.shipped_at):null,deliveredAt:r.delivered_at?Date.parse(r.delivered_at):null,contacts:r.contacts||{}}}
 function dbToProspect(r){return {id:r.id,name:r.name,phone:r.phone,source:r.source,stage:r.stage,note:r.note||'',followups:r.followups||0,nextFollowUp:r.next_follow_up||null,lastContact:r.last_contact_at?Date.parse(r.last_contact_at):null,created:Date.parse(r.created_at),meetingAt:r.meeting_at?Date.parse(r.meeting_at):null,meetingStatus:r.meeting_status||null,botMode:r.bot_mode||'auto',needsAttention:!!r.needs_attention,attentionReason:r.attention_reason||'',phoneNorm:r.phone_norm||''}}
 function dbToCheckout(r){return {id:r.id,clientId:r.client_id,created:Date.parse(r.updated_at||r.created_at),name:r.name||'',phone:r.phone||'',product:r.product||'',total:Number(r.total)||0,recoverUrl:r.recover_url||'',status:r.status}}
@@ -680,6 +702,13 @@ function realApi(){
     clearZones:async function(){fail(await sb.from('danger_zones').delete().not('id','is',null));S.zones=[]},
     setSubStatus:async function(cid,st){fail(await sb.from('clients').update({sub_status:st}).eq('id',cid))},
     setPrice:async function(cid,price){fail(await sb.from('clients').update({price:price}).eq('id',cid))},
+    setup:async function(cid,body){
+      var s=(await sb.auth.getSession()).data.session;
+      var r=await fetch(CFG.url+'/functions/v1/setup',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+s.access_token,'apikey':CFG.key},body:JSON.stringify(Object.assign({client_id:cid},body))});
+      var j=await r.json().catch(function(){return {}});
+      if(!r.ok){var e=new Error(j.error||('Error '+r.status));e.code=j.error;throw e}
+      return j;
+    },
     setCampaign:async function(cid,date){fail(await sb.from('clients').update({campaign_start:date||null}).eq('id',cid))},
     setPaid:async function(cid,month,paid,amount){fail(await sb.from('payments').upsert({client_id:cid,month:month,paid:paid,amount:amount}))},
     addProspect:async function(d){fail(await sb.from('prospects').insert({name:d.name,phone:d.phone,note:d.note||null,source:'Anuncio Meta',next_follow_up:C.isoDay(new Date())}))},
@@ -714,9 +743,10 @@ function demoApi(){
   function seed(){
     var now=Date.now(),day=86400000,mk=monthKey();
     var clients=[
-      {id:'c1',name:'Carla Ortiz',store:'Hogar Práctico EC',phone:'0991112233',email:'carla@demo.test',price:15,advance:8,templates:{},subStatus:'active',campaignStart:C.dayKey(Date.now()-40*86400000)},
+      {id:'c1',name:'Carla Ortiz',store:'Hogar Práctico EC',phone:'0991112233',email:'carla@demo.test',price:15,advance:8,templates:{},subStatus:'active',campaignStart:C.dayKey(Date.now()-40*86400000),setup:{store:true,hooks:true,secret:true,dropify:true,archive:true},shopOkAt:new Date().toISOString()},
       {id:'c2',name:'Diego Vera',store:'Gadgets Cuenca',phone:'0984445566',email:'diego@demo.test',price:15,advance:8,templates:{},subStatus:'cortesia'},
-      {id:'c3',name:'Paola Núñez',store:'Belleza Natural',phone:'0977778899',email:'paola@demo.test',price:15,advance:8,templates:{},subStatus:'canceled'}
+      {id:'c3',name:'Paola Núñez',store:'Belleza Natural',phone:'0977778899',email:'paola@demo.test',price:15,advance:8,templates:{},subStatus:'canceled'},
+      {id:'c4',name:'Rosa Nueva',store:'Mi tienda',phone:'',email:'rosa@demo.test',price:15,advance:8,templates:{},subStatus:'active',setup:{}}
     ];
     function o(c,st,name,prod,tot,phone,city,ago,hist){return {id:uid(),clientId:c,created:now-ago*day,status:st,qty:1,product:prod,total:tot,name:name,phone:phone,province:'—',city:city,address:'Av. Principal 12-34 y Calle Larga',guide:'',number:'',history:hist||{},advanceAsked:false,contacts:{},shippedAt:(st==='enviado'||st==='entregado'||st==='devuelto')?now-ago*day:null,deliveredAt:st==='entregado'?now-Math.max(0,ago-3)*day:null}}
     var orders=[o('c1','entregado','Rosa Mena','Fuente De Chocolate',28,'0960000001','Cuenca',6),o('c1','entregado','Luis Paz','Organizador Cocina',26,'0960000002','Quito',5),
@@ -746,6 +776,11 @@ function demoApi(){
     importZones:async function(rows){S.zones=rows.slice();return rows.length},
     clearZones:async function(){S.zones=[]},
     setCheckout:async function(){save()}, setSubStatus:async function(){save()}, setPrice:async function(){save()}, setCampaign:async function(){save()},
+    setup:async function(cid,b){var c=client(cid);c.setup=Object.assign({},c.setup);
+      if(b.action==='store'){if(String(b.store||'').trim().length<2){var e=new Error('x');e.code='invalid_store';throw e}c.store=String(b.store).trim();c.setup.store=true}
+      if(b.action==='secret'){var v=String(b.secret||'').trim();if(/^https?:/i.test(v)){var e1=new Error('x');e1.code='es_el_enlace';throw e1}if(v.length<24){var e2=new Error('x');e2.code='invalid_secret';throw e2}c.setup.secret=true;c.shopOkAt=new Date().toISOString()}
+      if(b.action==='step')c.setup[b.step]=b.done===true;
+      save();return {webhook_url:'https://ejemplo.test/functions/v1/shopify-webhook?t=demo',has_secret:!!c.setup.secret}},
     setPaid:async function(cid,month,paid,amount){var p=S.payments.find(function(x){return x.client_id===cid&&x.month===month});if(p){p.paid=paid;p.amount=amount}else S.payments.push({client_id:cid,month:month,paid:paid,amount:amount});save()},
     admin:async function(b){
       if(b.action==='create'){var c={id:uid(),name:b.name,store:b.store,phone:'',email:b.email,price:b.price,advance:8,templates:{},subStatus:b.status};S.clients.push(c);save();return {client_id:c.id,link:'https://ejemplo.test/#recovery-demo',webhook_url:'https://ejemplo.test/functions/v1/shopify-webhook?t=demo'}}
@@ -839,16 +874,47 @@ var FILTERS=[['por_confirmar','Por confirmar'],['confirmado','Confirmados'],['en
 function renderClient(c){
   var tab=S.tab.client;
   var nCart=S.checkouts.filter(function(k){return k.clientId===c.id&&k.status==='abierto'}).length;
+  var sp=C.setupProgress(c);
+  if(S.autoSetup!==c.id){S.autoSetup=c.id;S.suMsg='';if(!sp.complete&&!ordersOf(c.id).length){S.tab.client='config';tab='config'}}
   var nT=C.todayTasks(ordersOf(c.id),S.checkouts.filter(function(k){return k.clientId===c.id})).total;
-  nav([['hoy','Mis tareas de hoy'+(nT?' ('+nT+')':'')],['pedidos','Pedidos'],['carritos','Carritos'+(nCart?' ('+nCart+')':'')],['nuevo','Nuevo pedido'],['reporte','Reporte'],['mensajes','Mis mensajes']],tab,'client');
+  nav((sp.complete?[]:[['config','⚙️ Configurar mi tienda ('+sp.done+'/'+sp.total+')']]).concat([['hoy','Mis tareas de hoy'+(nT?' ('+nT+')':'')],['pedidos','Pedidos'],['carritos','Carritos'+(nCart?' ('+nCart+')':'')],['nuevo','Nuevo pedido'],['reporte','Reporte'],['mensajes','Mis mensajes']],sp.complete?[['config','⚙️ Mi tienda']]:[]),tab,'client');
   var h=(S.isAdmin?'<div class="alert info">Estás viendo el panel como <b>'+esc(c.name)+'</b> ('+esc(statusLabelSub(c.subStatus))+').</div>':'')
    +(c.subStatus==='past_due'?'<div class="alert amarillo">Tu último pago no se pudo cobrar. Actualiza tu método de pago para no perder el acceso.'+(CFG.whopUrl?' <a href="'+esc(CFG.whopUrl)+'" target="_blank" rel="noopener">Ir a pagar</a>':'')+'</div>':'');
-  if(tab==='hoy')h+=viewToday(c);else if(tab==='pedidos')h+=viewOrders(c);else if(tab==='carritos')h+=viewCarts(c);else if(tab==='nuevo')h+=viewNew(c);else if(tab==='reporte')h+=viewReport(c);else h+=viewTemplates(c);
+  if(tab==='config')h+=viewSetup(c);else if(tab==='hoy')h+=viewToday(c);else if(tab==='pedidos')h+=viewOrders(c);else if(tab==='carritos')h+=viewCarts(c);else if(tab==='nuevo')h+=viewNew(c);else if(tab==='reporte')h+=viewReport(c);else h+=viewTemplates(c);
   $('#view').innerHTML=h;
 }
 function statusLabelSub(s){return {pendiente:'Pendiente de pago',active:'Activo',past_due:'Pago atrasado',canceled:'Cancelado',cortesia:'Cortesía'}[s]||s}
 function statusLabel(s){return {por_confirmar:'Por confirmar',confirmado:'Confirmado',enviado:'Enviado',entregado:'Entregado',devuelto:'Devuelto',cancelado:'Cancelado'}[s]||s}
 
+var SU_ERR={invalid_store:'Escribe el nombre de tu tienda (de 2 a 60 letras).',es_el_enlace:'Eso es el enlace. El código es el texto largo de letras y números que aparece al final de la sección Webhooks.',invalid_secret:'Ese código no parece completo. Cópialo otra vez desde Shopify, sin espacios.'};
+function viewSetup(c){
+  var p=C.setupProgress(c),hk=S.hook[c.id];
+  if(!hk){S.hook[c.id]={loading:true};api.setup(c.id,{action:'get'}).then(function(r){S.hook[c.id]={url:r.webhook_url};render()}).catch(function(){S.hook[c.id]={error:true};render()})}
+  hk=S.hook[c.id];
+  function card(n,key,title,body){var d=p.is[key];return '<div class="card sstep'+(d?' done':'')+'"><div><span class="tnum">'+(d?'✓':n)+'</span><b>'+title+'</b>'+(d?' <span class="badge s-entregado">Listo</span>':'')+'</div>'+body+'</div>'}
+  function check(key,label){var d=p.is[key];return '<div class="actions"><button class="b '+(d?'':'g')+'" data-act="sustep" data-step="'+key+'" data-done="'+(d?'0':'1')+'">'+(d?'Desmarcar':label)+'</button></div>'}
+  var sup=CFG.supportWhatsapp?'<a class="b" target="_blank" rel="noopener" href="'+esc(C.waLink(CFG.supportWhatsapp,'Hola, necesito ayuda para configurar mi tienda '+c.store+' en ConfirmaYa'))+'">💬 Pedir ayuda</a>':'';
+  var h='<div class="card"><h2>'+(p.complete?'✅ Tu tienda está lista':'Configura tu tienda')+'</h2><div class="mute">'+(p.complete?'No tienes que hacer nada más.':'Son '+p.total+' pasos y se hacen una sola vez. Llevas '+p.done+'.')+'</div><div class="bar"><i style="width:'+Math.round(p.done/p.total*100)+'%"></i></div>'
+    +'<div class="actions"><a class="b" target="_blank" rel="noopener" href="guias/ConfirmaYa-Conectar-Shopify.pdf">📄 Guía con dibujos</a>'+sup+'</div></div>';
+  if(S.suMsg)h+='<div class="alert amarillo">'+esc(S.suMsg)+'</div>';
+  h+=card(1,'store','El nombre de tu tienda','<p class="mute">Así te presentas en los mensajes de WhatsApp.</p><input id="su-store" value="'+esc(p.is.store?c.store:'')+'" placeholder="Ejemplo: Hogar Práctico EC"><div class="actions"><button class="b p" data-act="sustore">Guardar nombre</button></div>');
+  var url=hk.url||'';
+  h+=card(2,'hooks','Crea los 4 avisos en Shopify','<p>En Shopify entra a:</p><div class="path"><span>⚙️ Configuración</span><i>›</i><span>Notificaciones</span><i>›</i><span>Webhooks</span><i>›</i><span>Crear webhook</span></div>'
+    +'<p><b>Copia este enlace</b> y pégalo en el campo <b>URL</b> de cada uno:</p><input id="su-url" readonly value="'+esc(url||(hk.error?'No pude cargar el enlace. Vuelve a abrir esta pestaña.':'Cargando…'))+'"><div class="actions"><button class="b p" data-act="sucopy"'+(url?'':' disabled')+'>📋 Copiar enlace</button></div>'
+    +'<p>Crea uno por cada <b>Evento</b>, con formato <b>JSON</b>:</p><table><tr><td>1</td><td>Creación de pedido</td></tr><tr><td>2</td><td>Actualización de pedido</td></tr><tr><td>3</td><td>Creación de checkout</td></tr><tr><td>4</td><td>Actualización de checkout</td></tr></table>'+check('hooks','✓ Ya creé los 4'));
+  h+=card(3,'secret','Pega el código de seguridad','<p>En la misma pantalla de <b>Webhooks</b>, Shopify dice <i>«Tus webhooks se firmarán con…»</i> y muestra un código largo. Cópialo y pégalo aquí.</p><input id="su-secret" type="password" autocomplete="off" placeholder="'+(p.is.secret?'Código guardado (pega otro para cambiarlo)':'Pega el código')+'"><div class="actions"><button class="b p" data-act="susecret">Guardar código</button></div><div class="mute">El código queda guardado de forma privada y no se vuelve a mostrar.</div>');
+  var msg={ok:'<div class="alert info">✅ <b>¡Tu tienda está conectada!</b> Último aviso: '+esc(c.shopOkAt?new Date(c.shopOkAt).toLocaleString('es-EC'):'')+'</div>',
+    falta_codigo:'<div class="alert amarillo">Shopify ya nos está avisando. <b>Falta el código</b> del paso 3.</div>',
+    codigo_mal:'<div class="alert rojo">Shopify nos avisa, pero <b>el código no coincide</b>. Cópialo de nuevo, guárdalo en el paso 3 y vuelve a probar.</div>',
+    esperando:'<div class="alert amarillo">Todavía no recibimos ningún aviso.</div>'}[p.state];
+  h+=card(4,'verify','Comprueba la conexión',(p.connected?'':'<p>En Shopify, junto al webhook <b>Creación de pedido</b>, toca los tres puntos <b>⋯</b> y <b>Enviar notificación de prueba</b>. Luego pulsa el botón.</p>')+msg+'<div class="actions"><button class="b p" data-act="sucheck">🔄 Comprobar conexión</button></div>');
+  h+=card(5,'dropify','Conecta los estados con Dropify','<p>En la aplicación <b>Dropify</b> de tu tienda configura:</p><table><tr><td>Guía generada</td><td>→ Preparado (fulfilled)</td></tr><tr><td>Entregado</td><td>→ Archivar</td></tr><tr><td>Cancelado</td><td>→ Cancelar</td></tr></table>'+check('dropify','✓ Ya configuré Dropify'));
+  h+=card(6,'archive','Apaga el archivado automático','<p>En Shopify, en <b>Configuración</b>, busca la opción de procesamiento de pedidos que dice algo como <b>«Archivar automáticamente el pedido»</b> y <b>desmárcala</b>.</p><p class="mute">Si queda activada, un pedido podría aparecer como entregado sin haber llegado.</p>'+check('archive','✓ Ya la apagué'));
+  return h;
+}
+function setupDo(cid,body,okMsg){
+  run(async function(){try{await api.setup(cid,body);S.suMsg='';await api.load();if(okMsg)toast(okMsg)}catch(e){if(SU_ERR[e.code]){S.suMsg=SU_ERR[e.code];window.scrollTo(0,0)}else throw new Error('No se pudo guardar. Revisa tu internet e inténtalo otra vez.')}});
+}
 function goalCard(c){
   var g=C.monthlyGoal(c.campaignStart,ordersOf(c.id));
   if(!g)return '';
@@ -865,7 +931,8 @@ var TASK_BTN={confirmar:'💬 Enviar confirmación',recordar:'⏰ Enviar recorda
 function viewToday(c){
   var mine=ordersOf(c.id),carts=S.checkouts.filter(function(k){return k.clientId===c.id});
   var t=C.todayTasks(mine,carts);
-  var h='<div class="card"><h2>'+(t.total?'Hoy tienes '+t.total+' tarea'+(t.total>1?'s':''):'¡Todo al día! 🎉')+'</h2><div class="mute">'+(t.total?'Empieza por la primera y ve bajando.':'No tienes tareas pendientes ahora.')+(t.waiting?' Hay '+t.waiting+' pedido(s) esperando respuesta del comprador.':'')+'</div></div>';
+  var sp=C.setupProgress(c);
+  var h=(sp.complete?'':'<div class="alert amarillo"><b>Te falta terminar de configurar tu tienda ('+sp.done+' de '+sp.total+').</b><div class="actions" style="margin-top:6px"><button class="b p" data-act="tab" data-scope="client" data-tab="config">Terminar ahora</button></div></div>')+'<div class="card"><h2>'+(t.total?'Hoy tienes '+t.total+' tarea'+(t.total>1?'s':''):'¡Todo al día! 🎉')+'</h2><div class="mute">'+(t.total?'Empieza por la primera y ve bajando.':'No tienes tareas pendientes ahora.')+(t.waiting?' Hay '+t.waiting+' pedido(s) esperando respuesta del comprador.':'')+'</div></div>';
   t.groups.forEach(function(g,i){
     h+='<div class="card"><div><span class="tnum">'+(i+1)+'</span><b>'+esc(g.title)+'</b> ('+g.items.length+')</div><div class="mute">'+esc(g.help)+'</div>';
     g.items.slice(0,15).forEach(function(o){
@@ -1106,7 +1173,8 @@ function renderAdmin(){
        +'<button class="b" data-act="paid" data-id="'+c.id+'">'+(paidThisMonth(c.id)?'Quitar pago manual':'Marcar pago manual')+'</button></div>'
        +'<details style="margin-top:10px"'+(S.adminInfo&&S.adminInfo.id===c.id?' open':'')+'><summary class="mute">Acceso y Shopify</summary><div class="actions"><button class="b" data-act="link" data-id="'+c.id+'">Generar enlace de acceso</button><button class="b" data-act="hook" data-id="'+c.id+'">Datos del webhook de Shopify</button></div><div id="info-'+c.id+'">'+(S.adminInfo&&S.adminInfo.id===c.id?S.adminInfo.html:'')+'</div></details>'
        +'<div class="row" style="margin-top:8px"><span class="mute">Mensualidad $</span><input type="number" style="width:90px" data-act="price" data-id="'+c.id+'" value="'+esc(c.price)+'"></div>'
-       +'<div class="row" style="margin-top:8px"><span class="mute">Arranque de campaña (día 8)</span><input type="date" style="width:170px" data-act="campaign" data-id="'+c.id+'" value="'+esc(c.campaignStart||'')+'">'+goalBadge(c)+'</div></div>';
+       +'<div class="row" style="margin-top:8px"><span class="mute">Arranque de campaña (día 8)</span><input type="date" style="width:170px" data-act="campaign" data-id="'+c.id+'" value="'+esc(c.campaignStart||'')+'">'+goalBadge(c)+'</div>'
+       +'<div class="row" style="margin-top:8px">'+setupBadge(c)+'</div></div>';
     }).join('')||'<div class="card mute">Aún no hay clientes.</div>';
   }else{
     h='<div class="card"><h2>Agregar cliente a mano</h2><div class="mute">Para tus clientes de la agencia (cuenta cortesía) o pruebas. Quien paga por Whop se crea solo.</div>'
@@ -1127,6 +1195,10 @@ function viewZones(){
   return h;
 }
 function loadXlsx(){return new Promise(function(res,rej){if(window.XLSX)return res();var sc=document.createElement('script');sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';sc.onload=res;sc.onerror=function(){rej(new Error('No pude cargar el lector de Excel. Revisa tu internet.'))};document.head.appendChild(sc)})}
+function setupBadge(c){
+  var p=C.setupProgress(c);
+  return '<span class="badge '+(p.complete?'s-entregado':p.state==='codigo_mal'?'r-rojo':'s-por_confirmar')+'">'+(p.complete?'✅ Tienda configurada':'Configuración '+p.done+'/'+p.total+(p.state==='codigo_mal'?' · el código no coincide':p.connected?' · conectada':''))+'</span>';
+}
 function goalBadge(c){
   var g=C.monthlyGoal(c.campaignStart,ordersOf(c.id));
   if(!g||g.status!=='activo')return '';
@@ -1146,6 +1218,11 @@ document.addEventListener('click',function(e){
     if(t.dataset.scope==='admin'&&t.dataset.tab==='bot'){(async function(){try{S.botStatus=await api.botCall({action:'status'})}catch(e){S.botStatus={claude:false,live:false}}
       var sim=S.prospects.filter(function(x){return x.source==='Simulador'})[0];if(sim)S.botMsgs[sim.id]=await api.loadMessages(sim.id);render()})()}}
   else if(a==='filter'){S.filter=t.dataset.f;render()}
+  else if(a==='sustore'&&c){setupDo(c.id,{action:'store',store:$('#su-store').value},'Nombre guardado')}
+  else if(a==='susecret'&&c){var sv=$('#su-secret').value.trim();if(!sv){S.suMsg='Primero pega el código.';render();return}setupDo(c.id,{action:'secret',secret:sv},'Código guardado')}
+  else if(a==='sustep'&&c){setupDo(c.id,{action:'step',step:t.dataset.step,done:t.dataset.done==='1'})}
+  else if(a==='sucheck'&&c){run(async function(){await api.load();var q=C.setupProgress(client(c.id));toast(q.connected?'¡Conectada!':'Todavía no llega el aviso')})}
+  else if(a==='sucopy'){var iu=$('#su-url');iu.select();var okc=function(){t.textContent='¡Copiado!'},noc=function(){t.textContent='Mantén presionado el enlace y toca Copiar'};try{navigator.clipboard.writeText(iu.value).then(okc,noc)}catch(x){noc()}}
   else if(a==='pickup'&&o){var zi=C.dangerAdvice(S.zones,o),ofs=zi&&zi.pickup?zi.pickup.offices:[],pick=ofs[Number(t.dataset.i)];if(pick){var pv=o.pickup;o.pickup=pick;run(async function(){try{await api.updateOrder(id,{pickup:pick})}catch(e){o.pickup=pv;throw e}})}}
   else if(a==='pickupclear'&&o){var pv2=o.pickup;o.pickup='';run(async function(){try{await api.updateOrder(id,{pickup:''})}catch(e){o.pickup=pv2;throw e}})}
   else if(a==='zimport'){var fi=$('#zfile'),f=fi&&fi.files&&fi.files[0];
