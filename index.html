@@ -1289,7 +1289,7 @@ function viewZones(){
   h+='<div class="card"><h2>Zonas cargadas: '+S.zones.length+'</h2>'+(S.zones.length?'<table><tr><th>Transportadora</th><th>Zonas</th></tr>'+Object.keys(by).map(function(k){return '<tr><td><b>'+esc(k)+'</b></td><td>'+by[k]+'</td></tr>'}).join('')+'</table><div class="mute" style="margin-top:8px">'+Object.keys(cities).length+' ciudades con alguna zona restringida. Una ciudad sin zonas registradas se muestra en verde: es lo que dice el archivo, no una garantía.</div>':'<div class="mute">Todavía no hay zonas cargadas.</div>')+'</div>';
   return h;
 }
-function loadXlsx(){return new Promise(function(res,rej){if(window.XLSX)return res();var sc=document.createElement('script');sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';sc.onload=res;sc.onerror=function(){rej(new Error('No pude cargar el lector de Excel. Revisa tu internet.'))};document.head.appendChild(sc)})}
+function loadXlsx(){return new Promise(function(res,rej){if(window.XLSX)return res();var sc=document.createElement('script');sc.src='https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';sc.integrity='sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT';sc.crossOrigin='anonymous';sc.onload=res;sc.onerror=function(){rej(new Error('No pude cargar el lector de Excel. Revisa tu internet.'))};document.head.appendChild(sc)})}
 function setupBadge(c){
   var p=C.setupProgress(c);
   return '<span class="badge '+(p.complete?'s-entregado':p.state==='codigo_mal'?'r-rojo':'s-por_confirmar')+'">'+(p.complete?'✅ Tienda configurada':'Configuración '+p.done+'/'+p.total+(p.state==='codigo_mal'?' · el código no coincide':p.connected?' · conectada':''))+'</span>';
